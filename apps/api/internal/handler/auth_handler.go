@@ -56,6 +56,8 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"authenticated": true,
 		"user":          user,
+		"token":         sessionID,
+		"session_id":    sessionID,
 	})
 }
 
@@ -77,6 +79,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"authenticated": true,
 		"user":          user,
+		"token":         sessionID,
+		"session_id":    sessionID,
 	})
 }
 
@@ -95,6 +99,8 @@ func (h *AuthHandler) Guest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"authenticated": true,
 		"user":          user,
+		"token":         sessionID,
+		"session_id":    sessionID,
 	})
 }
 
@@ -118,14 +124,26 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 // Session returns the current authenticated Sonara user
 func (h *AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("sonara_session")
-	if err == nil && cookie.Value != "" {
-		user, err := h.authService.GetUserBySession(r.Context(), cookie.Value)
+	var sessionID string
+	if cookie, err := r.Cookie("sonara_session"); err == nil && cookie.Value != "" {
+		sessionID = cookie.Value
+	}
+	if sessionID == "" {
+		authHdr := r.Header.Get("Authorization")
+		if len(authHdr) > 7 && authHdr[:7] == "Bearer " {
+			sessionID = authHdr[7:]
+		}
+	}
+
+	if sessionID != "" {
+		user, err := h.authService.GetUserBySession(r.Context(), sessionID)
 		if err == nil && user != nil {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"authenticated": true,
 				"is_premium":    true,
 				"user":          user,
+				"token":         sessionID,
+				"session_id":    sessionID,
 			})
 			return
 		}

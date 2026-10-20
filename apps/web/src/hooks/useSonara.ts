@@ -42,6 +42,9 @@ export function useLogin() {
       qc.setQueryData(["session"], { authenticated: true, user: data.user, is_premium: true });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["preferences"] });
+      qc.invalidateQueries({ queryKey: ["saved-tracks"] });
+      qc.invalidateQueries({ queryKey: ["my-playlists"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }
@@ -58,6 +61,9 @@ export function useSignup() {
       qc.setQueryData(["session"], { authenticated: true, user: data.user, is_premium: true });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["preferences"] });
+      qc.invalidateQueries({ queryKey: ["saved-tracks"] });
+      qc.invalidateQueries({ queryKey: ["my-playlists"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }
@@ -74,6 +80,9 @@ export function useGuestLogin() {
       qc.setQueryData(["session"], { authenticated: true, user: data.user, is_premium: true });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["preferences"] });
+      qc.invalidateQueries({ queryKey: ["saved-tracks"] });
+      qc.invalidateQueries({ queryKey: ["my-playlists"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }
@@ -194,10 +203,11 @@ export function useLyrics(track: Track | null) {
   });
 }
 
-export function useStats(range: string) {
+export function useStats(range: string, enabled = true) {
   return useQuery({
     queryKey: ["stats", range],
     queryFn: () => apiFetch<StatsReport>("/stats", { params: { range } }),
+    enabled,
     retry: retryUnlessClientError,
   });
 }
@@ -205,9 +215,9 @@ export function useStats(range: string) {
 /** Human-friendly message for an API failure (never shows raw JSON to people). */
 export function friendlyError(err: unknown): { title: string; detail: string; needsLogin: boolean } {
   if (err instanceof ApiError) {
-    if (err.code === 401) return { title: "Please log in", detail: "Connect your Spotify account to continue.", needsLogin: true };
-    if (err.code === 403) return { title: "Spotify blocked this request", detail: err.message, needsLogin: false };
-    if (err.code === 429) return { title: "Spotify is rate limiting us", detail: "Give it a moment and try again.", needsLogin: false };
+    if (err.code === 401) return { title: "Please sign in", detail: "Sign in to your Sonara account to access your personal collection.", needsLogin: true };
+    if (err.code === 403) return { title: "Access restricted", detail: err.message, needsLogin: false };
+    if (err.code === 429) return { title: "Rate limited", detail: "Give it a moment and try again.", needsLogin: false };
     return { title: "Something went wrong", detail: err.message, needsLogin: false };
   }
   return { title: "Can't reach Sonara's server", detail: "Check that the API is running and try again.", needsLogin: false };
@@ -222,8 +232,11 @@ export function useSavedTracks(enabled = true) {
   });
 }
 
-/** Whether a track is in the user's Liked Songs, plus a toggle that really saves it on Spotify. */
-export function useTrackLiked(uri?: string) {
+/** Whether a track is in the user's Liked Songs, plus a toggle that saves it with full metadata. */
+export function useTrackLiked(trackOrUri?: Track | string | null) {
+  const uri = typeof trackOrUri === "string" ? trackOrUri : trackOrUri?.uri;
+  const trackObj = typeof trackOrUri === "object" ? trackOrUri : null;
+
   const qc = useQueryClient();
   const query = useQuery({
     queryKey: ["track-saved", uri],
@@ -234,7 +247,11 @@ export function useTrackLiked(uri?: string) {
   });
   const toggle = useMutation({
     mutationFn: async (next: boolean) => {
-      await apiFetch<void>("/me/library", { method: next ? "PUT" : "DELETE", params: { uri } });
+      await apiFetch<void>("/me/library", {
+        method: next ? "PUT" : "DELETE",
+        params: { uri },
+        body: next && trackObj ? JSON.stringify(trackObj) : undefined,
+      });
       return next;
     },
     onMutate: async (next) => {

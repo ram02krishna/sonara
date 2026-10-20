@@ -36,13 +36,26 @@ func (r *PreferencesRepository) EnsureSchema(ctx context.Context) error {
 			artists JSONB NOT NULL DEFAULT '[]',
 			country VARCHAR(8) NOT NULL DEFAULT '',
 			onboarded BOOLEAN NOT NULL DEFAULT false,
+			audio_quality VARCHAR(32) NOT NULL DEFAULT 'lossless',
+			normalize_audio BOOLEAN NOT NULL DEFAULT true,
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 		)`)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = r.db.Exec(ctx, `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS audio_quality VARCHAR(32) NOT NULL DEFAULT 'lossless'`)
+	_, _ = r.db.Exec(ctx, `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS normalize_audio BOOLEAN NOT NULL DEFAULT true`)
+	return nil
 }
 
 func empty() models.Preferences {
-	return models.Preferences{Languages: []string{}, Genres: []string{}, Artists: []models.ArtistSummary{}}
+	return models.Preferences{
+		Languages:      []string{},
+		Genres:         []string{},
+		Artists:        []models.ArtistSummary{},
+		AudioQuality:   "lossless",
+		NormalizeAudio: true,
+	}
 }
 
 func (r *PreferencesRepository) Get(ctx context.Context, userID uuid.UUID) (models.Preferences, error) {
@@ -55,9 +68,11 @@ func (r *PreferencesRepository) Get(ctx context.Context, userID uuid.UUID) (mode
 		return empty(), nil
 	}
 	p := empty()
+	var aq *string
+	var na *bool
 	err := r.db.QueryRow(ctx,
-		`SELECT languages, genres, artists, country, onboarded FROM user_preferences WHERE user_id = $1`, userID,
-	).Scan(&p.Languages, &p.Genres, &p.Artists, &p.Country, &p.Onboarded)
+		`SELECT languages, genres, artists, country, onboarded, audio_quality, normalize_audio FROM user_preferences WHERE user_id = $1`, userID,
+	).Scan(&p.Languages, &p.Genres, &p.Artists, &p.Country, &p.Onboarded, &aq, &na)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty(), nil
 	}
@@ -73,6 +88,16 @@ func (r *PreferencesRepository) Get(ctx context.Context, userID uuid.UUID) (mode
 	if p.Artists == nil {
 		p.Artists = []models.ArtistSummary{}
 	}
+	if aq != nil && *aq != "" {
+		p.AudioQuality = *aq
+	} else {
+		p.AudioQuality = "lossless"
+	}
+	if na != nil {
+		p.NormalizeAudio = *na
+	} else {
+		p.NormalizeAudio = true
+	}
 	return p, nil
 }
 
@@ -86,6 +111,9 @@ func (r *PreferencesRepository) Save(ctx context.Context, userID uuid.UUID, p mo
 	if p.Artists == nil {
 		p.Artists = []models.ArtistSummary{}
 	}
+	if p.AudioQuality == "" {
+		p.AudioQuality = "lossless"
+	}
 	if r.db == nil {
 		r.mu.Lock()
 		r.mem[userID] = p
@@ -93,11 +121,13 @@ func (r *PreferencesRepository) Save(ctx context.Context, userID uuid.UUID, p mo
 		return nil
 	}
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO user_preferences (user_id, languages, genres, artists, country, onboarded, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+		INSERT INTO user_preferences (user_id, languages, genres, artists, country, onboarded, audio_quality, normalize_audio, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
 		ON CONFLICT (user_id) DO UPDATE SET
 			languages = EXCLUDED.languages, genres = EXCLUDED.genres, artists = EXCLUDED.artists,
-			country = EXCLUDED.country, onboarded = EXCLUDED.onboarded, updated_at = CURRENT_TIMESTAMP`,
-		userID, p.Languages, p.Genres, p.Artists, p.Country, p.Onboarded)
+			country = EXCLUDED.country, onboarded = EXCLUDED.onboarded,
+			audio_quality = EXCLUDED.audio_quality, normalize_audio = EXCLUDED.normalize_audio,
+			updated_at = CURRENT_TIMESTAMP`,
+		userID, p.Languages, p.Genres, p.Artists, p.Country, p.Onboarded, p.AudioQuality, p.NormalizeAudio)
 	return err
 }

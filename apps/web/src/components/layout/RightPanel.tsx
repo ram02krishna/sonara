@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef } from "react";
-import { X, ListMusic, Mic2, UserCheck, Play, Trash2, Sparkles } from "lucide-react";
+import { X, ListMusic, Mic2, UserCheck, Play, Trash2, Disc3 } from "lucide-react";
 import { usePlayerStore, RightPanelTab } from "@/store/usePlayerStore";
 import { cn, formatDuration, formatCompactNumber } from "@/lib/utils";
 import { useArtist, useLyrics } from "@/hooks/useSonara";
@@ -266,13 +266,13 @@ export function RightPanel() {
               </div>
             </div>
 
-            {/* Sonara Discovery badge */}
+            {/* Artist Spotlight */}
             <div className="p-3.5 rounded-2xl glass-card flex items-start gap-3">
-              <Sparkles className="w-5 h-5 text-violet-600 dark:text-violet-400 shrink-0 mt-0.5" />
+              <Disc3 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
               <div>
-                <p className="text-xs font-semibold text-foreground">Artist Insights</p>
+                <p className="text-xs font-semibold text-foreground">Artist Spotlight</p>
                 <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                  Streaming in 24-bit 96kHz lossless. Top trending artist in synthwave & contemporary pop.
+                  Available in lossless master audio. Verified artist catalogue streamed through Sonara.
                 </p>
               </div>
             </div>

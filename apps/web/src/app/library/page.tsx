@@ -7,6 +7,7 @@ import { Heart, ListMusic } from "lucide-react";
 import { friendlyError, useMyPlaylists, useSavedTracks, useTopArtists, useTopTracks } from "@/hooks/useSonara";
 import { ArtistCard, Cover, EmptyState, ErrorState, ShelfSkeleton, TrackRow } from "@/components/ui/media";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/store/useAppStore";
 
 type Tab = "liked" | "playlists" | "artists" | "tracks";
 const TABS: { id: Tab; label: string }[] = [
@@ -19,12 +20,13 @@ const TABS: { id: Tab; label: string }[] = [
 function LibraryInner() {
   const router = useRouter();
   const params = useSearchParams();
+  const { isAuthenticated } = useAppStore();
   const tab = (TABS.find((t) => t.id === params.get("tab"))?.id ?? "liked") as Tab;
 
-  const liked = useSavedTracks(tab === "liked");
-  const playlists = useMyPlaylists(tab === "playlists");
-  const artists = useTopArtists("medium_term", tab === "artists");
-  const tracks = useTopTracks("medium_term", tab === "tracks");
+  const liked = useSavedTracks(isAuthenticated && tab === "liked");
+  const playlists = useMyPlaylists(isAuthenticated && tab === "playlists");
+  const artists = useTopArtists("medium_term", isAuthenticated && tab === "artists");
+  const tracks = useTopTracks("medium_term", isAuthenticated && tab === "tracks");
 
   const active = useMemo(() => ({ liked, playlists, artists, tracks })[tab], [tab, liked, playlists, artists, tracks]);
   const err = active.error ? friendlyError(active.error) : null;
@@ -33,7 +35,7 @@ function LibraryInner() {
     <div className="p-4 md:p-8 space-y-6 max-w-6xl mx-auto">
       <header className="flex items-center gap-4">
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 flex items-center justify-center shadow-lg">
-          <Heart className="w-7 h-7 text-foreground fill-foreground" />
+          <Heart className="w-7 h-7 text-white fill-white" />
         </div>
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight text-foreground">Your Library</h1>
@@ -41,23 +43,43 @@ function LibraryInner() {
         </div>
       </header>
 
-      <div className="flex flex-wrap gap-2">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => router.replace(`/library?tab=${t.id}`)}
-            className={cn(
-              "px-4 py-1.5 rounded-full text-sm font-medium transition-colors",
-              tab === t.id ? "bg-foreground text-background" : "glass-pill text-foreground hover:bg-foreground/10"
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {!isAuthenticated ? (
+        <div className="glass-card rounded-3xl p-10 text-center max-w-lg mx-auto space-y-4 my-8">
+          <div className="w-16 h-16 rounded-2xl bg-primary/20 text-primary flex items-center justify-center mx-auto">
+            <Heart className="w-8 h-8 fill-current" />
+          </div>
+          <h2 className="text-2xl font-bold text-foreground">Enjoy your Library</h2>
+          <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+            Log in to see your liked songs, saved playlists, and favorite artists in one place.
+          </p>
+          <div className="pt-2">
+            <Link
+              href="/login?tab=signin"
+              className="inline-block px-8 py-3 rounded-full bg-foreground text-background font-bold text-sm hover:scale-105 active:scale-95 transition-all shadow-lg"
+            >
+              Log in
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-2">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => router.replace(`/library?tab=${t.id}`)}
+                className={cn(
+                  "px-4 py-1.5 rounded-full text-sm font-medium transition-colors",
+                  tab === t.id ? "bg-foreground text-background" : "glass-pill text-foreground hover:bg-foreground/10"
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
-      {err && <ErrorState title={err.title} detail={err.detail} onRetry={() => active.refetch()} />}
-      {active.isLoading && <ShelfSkeleton />}
+          {err && <ErrorState title={err.title} detail={err.detail} onRetry={() => active.refetch()} />}
+          {active.isLoading && <ShelfSkeleton />}
 
       {!err && !active.isLoading && tab === "liked" && (
         (liked.data ?? []).length ? (
@@ -72,7 +94,7 @@ function LibraryInner() {
       {!err && !active.isLoading && tab === "tracks" && (
         <div className="space-y-0.5">
           {(tracks.data ?? []).map((t, i) => <TrackRow key={t.id} track={t} index={i} context={tracks.data} />)}
-          {!tracks.data?.length && <EmptyState title="No top tracks yet" detail="Listen on Spotify for a while and they'll show up here." />}
+          {!tracks.data?.length && <EmptyState title="No top tracks yet" detail="Listen to tracks in Sonara and they'll show up here." />}
         </div>
       )}
 
@@ -82,7 +104,7 @@ function LibraryInner() {
             {artists.data!.map((a) => <ArtistCard key={a.id} artist={a} />)}
           </div>
         ) : (
-          <EmptyState title="No top artists yet" detail="Spotify builds this from your listening history." />
+          <EmptyState title="No top artists yet" detail="Listen to your favorite artists in Sonara and they'll show up here." />
         )
       )}
 
@@ -90,18 +112,20 @@ function LibraryInner() {
         (playlists.data ?? []).length ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {playlists.data!.map((p) => (
-              <Link key={p.id} href={`/playlist/${p.id}`} className="flex items-center gap-3 p-3 rounded-2xl glass-card">
+              <Link key={p.id} href={`/playlist/${p.id}`} className="group flex items-center gap-3 p-3 rounded-2xl glass-card">
                 <Cover src={p.images?.[0]?.url} alt={p.name} className="w-16 h-16 shrink-0 rounded-xl" />
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate">{p.name}</p>
+                  <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">{p.name}</p>
                   <p className="text-xs text-muted-foreground flex items-center gap-1"><ListMusic className="w-3 h-3" />{p.tracks_total ?? 0} tracks</p>
                 </div>
               </Link>
             ))}
           </div>
         ) : (
-          <EmptyState title="No playlists yet" detail="Create a playlist in Spotify and it will appear here." />
+          <EmptyState title="No playlists yet" detail="Create or follow a playlist to see it here." />
         )
+      )}
+        </>
       )}
     </div>
   );

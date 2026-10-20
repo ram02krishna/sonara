@@ -21,21 +21,26 @@ func NewDashboardHandler(music *MusicHandler, builder *dashboard.Builder) *Dashb
 }
 
 func (h *DashboardHandler) GetDashboard(w http.ResponseWriter, r *http.Request) {
-	token, user, ok := h.music.requireUser(w, r)
-	if !ok {
+	token, user, err := h.music.resolveToken(r)
+	if err != nil || token == "" {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "Please sign in to Sonara.")
 		return
 	}
-	prefs, err := h.music.prefsRepo.Get(r.Context(), user.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "preferences_unavailable", "Could not load your taste preferences.")
-		return
+	var prefs models.Preferences
+	userID := "guest"
+	if user != nil {
+		userID = user.ID.String()
+		prefs, _ = h.music.prefsRepo.Get(r.Context(), user.ID)
 	}
 	resp := h.builder.Build(r.Context(), dashboard.Input{
-		UserID: user.ID.String(),
+		UserID: userID,
 		Token:  token,
 		Market: "from_token",
 		Prefs:  prefs,
 	})
+	if user == nil {
+		resp.NeedsOnboarding = false
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -73,10 +78,16 @@ func (h *DashboardHandler) PutPreferences(w http.ResponseWriter, r *http.Request
 // SanitizePreferences trims, lowercases, dedupes and bounds user input.
 func SanitizePreferences(in models.Preferences) models.Preferences {
 	out := models.Preferences{
-		Languages: cleanList(in.Languages, 10, 40),
-		Genres:    cleanList(in.Genres, 20, 60),
-		Artists:   []models.ArtistSummary{},
-		Onboarded: true,
+		Languages:      cleanList(in.Languages, 10, 40),
+		Genres:         cleanList(in.Genres, 20, 60),
+		Artists:        []models.ArtistSummary{},
+		Onboarded:      true,
+		NormalizeAudio: in.NormalizeAudio,
+	}
+	if in.AudioQuality == "high" || in.AudioQuality == "normal" || in.AudioQuality == "lossless" {
+		out.AudioQuality = in.AudioQuality
+	} else {
+		out.AudioQuality = "lossless"
 	}
 	seen := map[string]bool{}
 	for _, a := range in.Artists {

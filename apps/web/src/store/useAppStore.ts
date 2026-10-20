@@ -21,6 +21,9 @@ interface AppState {
   isAuthenticated: boolean;
   isLoadingAuth: boolean;
   toasts: ToastMessage[];
+  audioQuality: "lossless" | "high" | "normal";
+  normalizeAudio: boolean;
+  crossfadeSeconds: number;
 
   setTheme: (theme: ThemeMode) => void;
   toggleTheme: () => void;
@@ -34,6 +37,9 @@ interface AppState {
   setIsLoadingAuth: (loading: boolean) => void;
   addToast: (toast: Omit<ToastMessage, "id">) => void;
   removeToast: (id: string) => void;
+  setAudioQuality: (quality: "lossless" | "high" | "normal") => void;
+  setNormalizeAudio: (normalize: boolean) => void;
+  setCrossfadeSeconds: (seconds: number) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -45,6 +51,42 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAuthenticated: false,
   isLoadingAuth: true,
   toasts: [],
+  audioQuality: (typeof window !== "undefined" && (localStorage.getItem("sonara-audio-quality") as any)) || "lossless",
+  normalizeAudio: typeof window !== "undefined" ? localStorage.getItem("sonara-normalize-audio") !== "false" : true,
+  crossfadeSeconds: (typeof window !== "undefined" && Number(localStorage.getItem("sonara-crossfade"))) || 0,
+
+  setAudioQuality: (quality) => {
+    set({ audioQuality: quality });
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("sonara-audio-quality", quality);
+      } catch {
+        // ignore
+      }
+    }
+  },
+
+  setNormalizeAudio: (normalize) => {
+    set({ normalizeAudio: normalize });
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("sonara-normalize-audio", String(normalize));
+      } catch {
+        // ignore
+      }
+    }
+  },
+
+  setCrossfadeSeconds: (seconds) => {
+    set({ crossfadeSeconds: seconds });
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("sonara-crossfade", String(seconds));
+      } catch {
+        // ignore
+      }
+    }
+  },
 
   setTheme: (theme) => {
     set({ theme });
@@ -78,8 +120,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMood: (mood) => {
     set({ mood });
     if (typeof document !== "undefined") {
-      let accentColor = "#8b5cf6"; // default
-      if (mood === "focus") accentColor = "#10b981"; // emerald
+      let accentColor = "#3b82f6"; // default
+      if (mood === "focus") accentColor = "#3b82f6"; // royal blue
       if (mood === "workout") accentColor = "#f97316"; // vibrant orange
       if (mood === "latenight") accentColor = "#6366f1"; // deep indigo
 

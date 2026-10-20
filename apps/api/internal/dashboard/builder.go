@@ -65,9 +65,8 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 		artists []models.Artist
 		tracks  []models.Track
 		recent  []models.PlayHistoryItem
-		news    []models.AlbumSummary
 	)
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		artists = cached(ctx, b.cache, key(in.UserID, "top-artists"), time.Hour, func() ([]models.Artist, error) {
@@ -86,19 +85,17 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 			return b.src.GetRecentlyPlayed(ctx, in.Token, 30)
 		})
 	}()
-	go func() {
-		defer wg.Done()
-		news = cached(ctx, b.cache, key(marketScope(in, market), "new-albums"), 30*time.Minute, func() ([]models.AlbumSummary, error) {
-			return b.src.SearchNewAlbums(ctx, in.Token, market, 10)
-		})
-	}()
 	wg.Wait()
 
 	topGenres := RankGenres(artists)
 	seeds := buildSeeds(topGenres, artists, in.Prefs)
 
-	// Taste shelves run in parallel; results keep seed order.
+	// Taste shelves and personalized new releases run in parallel; results keep seed order.
 	shelves := make([][]models.Track, len(seeds))
+	var (
+		news         []models.AlbumSummary
+		newsSubtitle string
+	)
 	var swg sync.WaitGroup
 	for i, sd := range seeds {
 		swg.Add(1)
@@ -107,6 +104,12 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 			shelves[i] = b.runSeed(ctx, in, market, sd)
 		}(i, sd)
 	}
+
+	swg.Add(1)
+	go func() {
+		defer swg.Done()
+		news, newsSubtitle = b.fetchTasteTunedNewReleases(ctx, in, market, topGenres, artists)
+	}()
 	swg.Wait()
 
 	resp := &models.DashboardResponse{
@@ -169,7 +172,7 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 
 	if len(news) > 0 {
 		resp.Sections = append(resp.Sections, models.DashboardSection{
-			ID: "new-releases", Type: "grid", Kind: "albums", Title: "New releases", Subtitle: "Fresh on Spotify", Albums: news,
+			ID: "new-releases", Type: "grid", Kind: "albums", Title: "New releases", Subtitle: newsSubtitle, Albums: news,
 		})
 	}
 
@@ -242,11 +245,14 @@ func buildSeeds(topGenres []string, topArtists []models.Artist, p models.Prefere
 		}
 		add(seed{id: "artist-" + slug(a.Name), title: "More from " + a.Name, queries: []string{`artist:"` + a.Name + `"`}})
 	}
-	// Spotify may omit genres; fall back to the user's own top artists as seeds.
 	if len(topGenres) == 0 {
 		for _, a := range firstArtists(topArtists, 2) {
 			add(seed{id: "artist-" + slug(a.Name), title: "More like " + a.Name, queries: []string{`artist:"` + a.Name + `"`}})
 		}
+	}
+	if len(seeds) == 0 {
+		add(seed{id: "genre-pop", title: "Popular Hits", sub: "Trending music", queries: []string{`genre:"pop"`, "top hits"}})
+		add(seed{id: "genre-hits", title: "Global Top Tracks", sub: "Featured catalogue", queries: []string{"today top hits", "global 50"}})
 	}
 	return seeds
 }
@@ -349,3 +355,211 @@ func titleCase(s string) string {
 	}
 	return strings.Join(words, " ")
 }
+
+// fetchTasteTunedNewReleases queries Spotify for fresh albums tailored to the user's
+// taste (languages, genres, artists, and listened top genres) instead of a generic global list.
+func (b *Builder) fetchTasteTunedNewReleases(ctx context.Context, in Input, market string, topGenres []string, topArtists []models.Artist) ([]models.AlbumSummary, string) {
+	subtitle := buildNewReleasesSubtitle(in.Prefs, topGenres)
+	tasteHash := hashTaste(in.Prefs, topGenres)
+	cacheKey := key(in.UserID, "new-albums:"+tasteHash)
+
+	albums := cached(ctx, b.cache, cacheKey, 20*time.Minute, func() ([]models.AlbumSummary, error) {
+		queries := buildNewReleasesQueries(in.Prefs, topGenres, topArtists)
+		if len(queries) == 0 {
+			queries = []string{"tag:new"}
+		}
+
+		albumLists := make([][]models.AlbumSummary, len(queries))
+		var nwg sync.WaitGroup
+		for i, q := range queries {
+			nwg.Add(1)
+			go func(idx int, queryStr string) {
+				defer nwg.Done()
+				res, err := b.src.Search(ctx, in.Token, queryStr, "album", 8, market)
+				if err == nil && res != nil && len(res.Albums) > 0 {
+					albumLists[idx] = res.Albums
+				}
+			}(i, q)
+		}
+		nwg.Wait()
+
+		var combined []models.AlbumSummary
+		seen := make(map[string]bool)
+		maxPerList := 8
+		for r := 0; r < maxPerList && len(combined) < 12; r++ {
+			for _, list := range albumLists {
+				if r < len(list) {
+					item := list[r]
+					if item.ID != "" && !seen[item.ID] && len(combined) < 12 {
+						seen[item.ID] = true
+						combined = append(combined, item)
+					}
+				}
+			}
+		}
+
+		if len(combined) == 0 {
+			res, err := b.src.SearchNewAlbums(ctx, in.Token, market, 10)
+			if err == nil {
+				return res, nil
+			}
+		}
+		return combined, nil
+	})
+
+	return albums, subtitle
+}
+
+func hashTaste(p models.Preferences, topGenres []string) string {
+	var parts []string
+	for _, l := range p.Languages {
+		parts = append(parts, "l:"+strings.ToLower(strings.TrimSpace(l)))
+	}
+	for _, g := range p.Genres {
+		parts = append(parts, "g:"+strings.ToLower(strings.TrimSpace(g)))
+	}
+	for _, a := range p.Artists {
+		parts = append(parts, "a:"+strings.ToLower(strings.TrimSpace(a.Name)))
+	}
+	for _, tg := range firstN(topGenres, 2) {
+		parts = append(parts, "tg:"+strings.ToLower(strings.TrimSpace(tg)))
+	}
+	if len(parts) == 0 {
+		return "default"
+	}
+	h := sha1.Sum([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(h[:8])
+}
+
+func buildNewReleasesSubtitle(p models.Preferences, topGenres []string) string {
+	var tags []string
+	for _, l := range p.Languages {
+		if strings.TrimSpace(l) != "" {
+			tags = append(tags, titleCase(l))
+		}
+	}
+	for _, g := range p.Genres {
+		if strings.TrimSpace(g) != "" {
+			tags = append(tags, titleCase(g))
+		}
+	}
+	if len(tags) == 0 && len(p.Artists) > 0 {
+		for _, a := range p.Artists {
+			if strings.TrimSpace(a.Name) != "" {
+				tags = append(tags, a.Name)
+			}
+		}
+	}
+	if len(tags) == 0 && len(topGenres) > 0 {
+		for _, tg := range firstN(topGenres, 2) {
+			tags = append(tags, titleCase(tg))
+		}
+	}
+
+	if len(tags) == 0 {
+		return "Fresh studio releases & drops"
+	}
+	if len(tags) == 1 {
+		return fmt.Sprintf("Fresh drops tuned to %s", tags[0])
+	}
+	return fmt.Sprintf("Fresh drops tuned to %s & %s", tags[0], tags[1])
+}
+
+func buildNewReleasesQueries(p models.Preferences, topGenres []string, topArtists []models.Artist) []string {
+	var queries []string
+	used := make(map[string]bool)
+
+	addQuery := func(q string) {
+		q = strings.TrimSpace(q)
+		if q == "" || used[strings.ToLower(q)] || len(queries) >= 3 {
+			return
+		}
+		used[strings.ToLower(q)] = true
+		queries = append(queries, q)
+	}
+
+	for _, l := range p.Languages {
+		if strings.TrimSpace(l) != "" {
+			addQuery(newReleaseLanguageQuery(l))
+		}
+	}
+
+	for _, g := range p.Genres {
+		if strings.TrimSpace(g) != "" {
+			addQuery(newReleaseGenreQuery(g))
+		}
+	}
+
+	for _, a := range p.Artists {
+		if strings.TrimSpace(a.Name) != "" {
+			addQuery(newReleaseArtistQuery(a.Name))
+		}
+	}
+
+	if len(queries) == 0 {
+		for _, tg := range firstN(topGenres, 2) {
+			addQuery(newReleaseGenreQuery(tg))
+		}
+		for _, ta := range firstArtists(topArtists, 1) {
+			addQuery(newReleaseArtistQuery(ta.Name))
+		}
+	}
+
+	queries = append(queries, "tag:new")
+	return queries
+}
+
+func newReleaseLanguageQuery(lang string) string {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	switch l {
+	case "hindi":
+		return "tag:new hindi"
+	case "punjabi":
+		return "tag:new punjabi"
+	case "tamil":
+		return "tag:new tamil"
+	case "telugu":
+		return "tag:new telugu"
+	case "malayalam":
+		return "tag:new malayalam"
+	case "kannada":
+		return "tag:new kannada"
+	case "bengali":
+		return "tag:new bengali"
+	case "marathi":
+		return "tag:new marathi"
+	case "gujarati":
+		return "tag:new gujarati"
+	case "urdu":
+		return "tag:new urdu"
+	case "korean":
+		return "tag:new k-pop"
+	case "japanese":
+		return "tag:new j-pop"
+	case "spanish":
+		return "tag:new latin"
+	case "portuguese":
+		return "tag:new brazilian"
+	case "arabic":
+		return "tag:new arabic"
+	case "french":
+		return "tag:new french"
+	case "german":
+		return "tag:new german"
+	case "turkish":
+		return "tag:new turkish"
+	case "english":
+		return "tag:new pop"
+	default:
+		return "tag:new " + l
+	}
+}
+
+func newReleaseGenreQuery(g string) string {
+	return "tag:new " + strings.ToLower(strings.TrimSpace(g))
+}
+
+func newReleaseArtistQuery(name string) string {
+	return `tag:new "` + strings.TrimSpace(name) + `"`
+}
+

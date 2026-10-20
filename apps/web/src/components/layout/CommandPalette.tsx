@@ -7,7 +7,7 @@ import {
   Music,
   Play,
   SkipForward,
-  Sparkles,
+  Headphones,
   Zap,
   Moon,
   Sun,
@@ -93,9 +93,9 @@ export function CommandPalette() {
     },
     {
       id: "mood-focus",
-      title: "Activate Focus Mood",
-      icon: Sparkles,
-      category: "Moods",
+      title: "Activate Focus Audio",
+      icon: Headphones,
+      category: "Audio Modes",
       run: () => setMood("focus"),
     },
     {

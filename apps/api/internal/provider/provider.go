@@ -18,6 +18,8 @@ type MusicProvider interface {
 	GetMyPlaylists(ctx context.Context, accessToken string, limit int) ([]models.PlaylistSummary, error)
 	GetPlaylist(ctx context.Context, accessToken string, id string) (*models.PlaylistSummary, []models.Track, error)
 	GetArtist(ctx context.Context, accessToken string, id string) (*models.Artist, error)
+	GetArtistTopTracks(ctx context.Context, accessToken string, id string, market string) ([]models.Track, error)
+	GetTrack(ctx context.Context, accessToken string, id string) (*models.Track, error)
 	SaveToLibrary(ctx context.Context, accessToken string, uris []string) error
 	RemoveFromLibrary(ctx context.Context, accessToken string, uris []string) error
 	LibraryContains(ctx context.Context, accessToken string, uris []string) ([]bool, error)

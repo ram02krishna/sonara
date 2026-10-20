@@ -145,11 +145,13 @@ type StatsReport struct {
 // They seed the dashboard for new users and are blended with real listening
 // data for everyone else, so each account sees its own languages and genres.
 type Preferences struct {
-	Languages []string        `json:"languages"`
-	Genres    []string        `json:"genres"`
-	Artists   []ArtistSummary `json:"artists"`
-	Country   string          `json:"country,omitempty"` // ISO-3166 alpha-2; empty = use Spotify "from_token"
-	Onboarded bool            `json:"onboarded"`
+	Languages      []string        `json:"languages"`
+	Genres         []string        `json:"genres"`
+	Artists        []ArtistSummary `json:"artists"`
+	Country        string          `json:"country,omitempty"` // ISO-3166 alpha-2
+	Onboarded      bool            `json:"onboarded"`
+	AudioQuality   string          `json:"audio_quality,omitempty"`
+	NormalizeAudio bool            `json:"normalize_audio,omitempty"`
 }
 
 // DashboardSection is one server-driven block of the home screen.

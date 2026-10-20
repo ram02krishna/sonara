@@ -339,3 +339,18 @@ func (r *UserRepository) DeleteSession(ctx context.Context, sessionID string) er
 	_, err := r.db.Exec(ctx, query, sessionID)
 	return err
 }
+
+func (r *UserRepository) GetDefaultUser(ctx context.Context) (*models.User, error) {
+	if r.db == nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		for _, u := range r.memUsers {
+			if u.Email != "listener@sonara.app" {
+				return u, nil
+			}
+		}
+		defaultID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+		return r.memUsers[defaultID], nil
+	}
+	return nil, nil
+}

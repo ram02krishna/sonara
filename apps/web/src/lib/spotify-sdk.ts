@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // Minimal typings + singleton holder for the Spotify Web Playback SDK (Premium only).
 
 declare global {

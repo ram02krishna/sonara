@@ -139,6 +139,47 @@ func (s *SpotifyProvider) GetArtist(ctx context.Context, accessToken string, id 
 	return &models.Artist{ID: a.ID, Name: a.Name, URI: a.URI, Genres: a.Genres, Images: a.Images}, nil
 }
 
+// GetArtistTopTracks fetches the top tracks for an artist from Spotify catalog
+func (s *SpotifyProvider) GetArtistTopTracks(ctx context.Context, accessToken string, id string, market string) ([]models.Track, error) {
+	if accessToken == "" {
+		if appTok, err := s.GetAppToken(ctx); err == nil {
+			accessToken = appTok
+		}
+	}
+	if market == "" {
+		market = "US"
+	}
+	endpoint := fmt.Sprintf("/artists/%s/top-tracks?market=%s", url.PathEscape(id), url.QueryEscape(market))
+	resp, err := s.doRequest(ctx, http.MethodGet, endpoint, accessToken, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
+	var data struct {
+		Tracks []rawTrack `json:"tracks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	tracks := make([]models.Track, 0, len(data.Tracks))
+	for _, t := range data.Tracks {
+		tracks = append(tracks, models.Track{
+			ID:         t.ID,
+			Name:       t.Name,
+			URI:        t.URI,
+			PreviewURL: t.PreviewURL,
+			DurationMs: t.DurationMs,
+			Explicit:   t.Explicit,
+			Artists:    t.Artists,
+			Album:      t.Album,
+		})
+	}
+	return tracks, nil
+}
+
 // libraryURIs sends the URI list as both the query string and JSON body: Spotify's
 // Feb 2026 generic /me/library endpoints take Spotify URIs, and this keeps working
 // whichever form the endpoint accepts.

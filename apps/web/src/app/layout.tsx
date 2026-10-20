@@ -12,8 +12,8 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Sonara — Modern Lossless Music Streaming",
   description:
-    "Experience music at its pinnacle. Sonara merges the catalog depth of Spotify with Apple Music's pristine aesthetics, lossless audio, dynamic album reactive theming, and time-synced lyrics.",
-  keywords: ["music streaming", "spotify", "lossless audio", "lyrics", "apple music", "bento dashboard"],
+    "Experience music at its pinnacle. Sonara delivers pristine aesthetics, studio lossless audio, dynamic album reactive theming, and time-synced lyrics.",
+  keywords: ["music streaming", "lossless audio", "lyrics", "studio audio", "bento dashboard"],
   authors: [{ name: "Sonara Engineering" }],
   icons: {
     icon: "/favicon.ico",

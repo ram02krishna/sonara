@@ -18,7 +18,7 @@ export function ToastContainer() {
 
         if (toast.type === "success") {
           Icon = CheckCircle2;
-          iconColor = "text-emerald-600 dark:text-emerald-400";
+          iconColor = "text-blue-600 dark:text-blue-400";
         } else if (toast.type === "error") {
           Icon = AlertCircle;
           iconColor = "text-rose-600 dark:text-rose-400";

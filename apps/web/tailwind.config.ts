@@ -56,7 +56,7 @@ const config: Config = {
           glass: "rgba(255, 255, 255, 0.03)",
         },
         mood: {
-          focus: "#10b981",     // Emerald
+          focus: "#3b82f6",     // Royal Blue
           workout: "#f97316",   // Vibrant Orange
           latenight: "#8b5cf6", // Deep Violet
         }

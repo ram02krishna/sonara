@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Music } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { RightPanel } from "@/components/layout/RightPanel";
@@ -15,24 +14,7 @@ import { MobileNavBar } from "@/components/layout/MobileNavBar";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { useAppStore } from "@/store/useAppStore";
 import { useSession } from "@/hooks/useSonara";
-import { UserProfile } from "@/types/api";
-
-function Splash() {
-  return (
-    <div className="h-screen w-screen flex items-center justify-center bg-background">
-      <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-violet-600 to-cyan-400 flex items-center justify-center animate-pulseGlow">
-        <Music className="w-7 h-7 text-foreground" />
-      </div>
-    </div>
-  );
-}
-
-const DEFAULT_GUEST_USER: UserProfile = {
-  id: "00000000-0000-0000-0000-000000000001",
-  display_name: "Sonara Listener",
-  email: "listener@sonara.app",
-  product: "premium",
-};
+import { saveStoredToken } from "@/lib/api-client";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -49,10 +31,13 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isLoading) return;
-    if (session?.user) {
+    if (session?.authenticated && session?.user) {
       setUser(session.user);
+      if (session.token) {
+        saveStoredToken(session.token);
+      }
     } else {
-      setUser(DEFAULT_GUEST_USER);
+      setUser(null);
     }
     // Studio master mode - HTML5 playback engine is active
     setIsPremiumRequired(false);
@@ -64,8 +49,6 @@ function AppShell({ children }: { children: React.ReactNode }) {
       router.replace("/");
     }
   }, [isLoading, session?.authenticated, onLogin, router]);
-
-  if (isLoading) return <Splash />;
 
   if (onLogin) {
     return (

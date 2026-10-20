@@ -48,7 +48,7 @@ export default function PlaylistPage() {
       ) : (
         <EmptyState
           title="Tracks aren't available for this playlist"
-          detail="Spotify only shares playlist contents with apps for playlists you own or collaborate on."
+          detail="Only playlists you own or collaborate on can display private track contents."
           action={<Lock className="w-4 h-4 mx-auto text-muted-foreground" />}
         />
       )}

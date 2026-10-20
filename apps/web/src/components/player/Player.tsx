@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
@@ -16,7 +15,6 @@ import {
   Mic2,
   ListMusic,
   Heart,
-  Sparkles,
 } from "lucide-react";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { useAppStore } from "@/store/useAppStore";
@@ -50,6 +48,7 @@ export function Player() {
     cycleRepeatMode,
     playNext,
     playPrevious,
+    isExpanded,
     setIsExpanded,
     rightPanelTab,
     toggleRightPanelTab,
@@ -57,11 +56,14 @@ export function Player() {
     deviceId,
   } = usePlayerStore();
 
-  const { addToast } = useAppStore();
-  const { liked: isLiked, toggle: toggleLike } = useTrackLiked(currentTrack?.uri);
+  const { addToast, audioQuality } = useAppStore();
+  const { liked: isLiked, toggle: toggleLike } = useTrackLiked(currentTrack);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ytPlayerRef = useRef<any>(null);
+  const isYtReadyRef = useRef<boolean>(false);
+  const pendingVideoIdRef = useRef<string | null>(null);
+  const recordedPlayRef = useRef<string | null>(null);
   const activeEngineRef = useRef<"sdk" | "youtube" | "preview">("youtube");
   const [isFullTrackMode, setIsFullTrackMode] = useState<boolean>(true);
 
@@ -87,8 +89,24 @@ export function Player() {
           },
           events: {
             onReady: (event: any) => {
+              isYtReadyRef.current = true;
               const v = isMuted ? 0 : volume;
-              event.target.setVolume(v);
+              try {
+                event.target.setVolume(v);
+                const iframe = event.target.getIframe?.();
+                if (iframe) {
+                  iframe.setAttribute("allow", "autoplay; encrypted-media");
+                }
+                if (pendingVideoIdRef.current) {
+                  const vid = pendingVideoIdRef.current;
+                  pendingVideoIdRef.current = null;
+                  event.target.loadVideoById({ videoId: vid });
+                  event.target.playVideo?.();
+                  setIsPlaying(true);
+                }
+              } catch {
+                // ignore
+              }
             },
             onStateChange: (event: any) => {
               // 0 = ENDED
@@ -141,6 +159,7 @@ export function Player() {
 
     // Reset progress and set default track duration
     setProgressMs(0);
+    recordedPlayRef.current = null;
     if (currentTrack.duration_ms) {
       usePlayerStore.setState({ durationMs: currentTrack.duration_ms });
     }
@@ -171,22 +190,42 @@ export function Player() {
         const res = await fetch(
           `/api/stream?name=${encodeURIComponent(currentTrack.name)}&artist=${encodeURIComponent(
             currentTrack.artists?.[0]?.name || ""
-          )}`
+          )}&quality=${audioQuality}`
         );
         const data = await res.json();
 
         if (cancelled) return;
 
-        if (data.found && data.videoId && ytPlayerRef.current?.loadVideoById) {
+        if (data.found && data.videoId) {
           activeEngineRef.current = "youtube";
           setIsFullTrackMode(true);
-          // Pause preview audio if playing
           audioRef.current?.pause();
 
-          ytPlayerRef.current.loadVideoById(data.videoId);
-          const v = isMuted ? 0 : volume;
-          ytPlayerRef.current.setVolume(v);
-          setIsPlaying(true);
+          const startYt = (vid: string) => {
+            if (ytPlayerRef.current?.loadVideoById && isYtReadyRef.current) {
+              try {
+                ytPlayerRef.current.loadVideoById({ videoId: vid });
+                const v = isMuted ? 0 : volume;
+                ytPlayerRef.current.setVolume?.(v);
+                const q = audioQuality === "lossless" ? "highres" : audioQuality === "high" ? "hd1080" : "medium";
+                ytPlayerRef.current.setPlaybackQuality?.(q);
+                ytPlayerRef.current.playVideo?.();
+                setIsPlaying(true);
+                return true;
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          };
+
+          if (!startYt(data.videoId)) {
+            pendingVideoIdRef.current = data.videoId;
+            const checkYt = setInterval(() => {
+              if (startYt(data.videoId) || cancelled) clearInterval(checkYt);
+            }, 80);
+            setTimeout(() => clearInterval(checkYt), 4000);
+          }
           return;
         }
       } catch {
@@ -235,7 +274,21 @@ export function Player() {
           const currSec = ytPlayerRef.current.getCurrentTime();
           const durSec = ytPlayerRef.current.getDuration();
           if (typeof currSec === "number" && isFinite(currSec)) {
-            setProgressMs(Math.round(currSec * 1000));
+            const currentMs = Math.round(currSec * 1000);
+            setProgressMs(currentMs);
+
+            // Automatically record genuine listening history to power live analytics
+            if (currentMs >= 12000 && currentTrack && recordedPlayRef.current !== currentTrack.id) {
+              recordedPlayRef.current = currentTrack.id;
+              apiFetch("/history", {
+                method: "POST",
+                body: JSON.stringify({
+                  track: currentTrack,
+                  listened_ms: currentMs,
+                  source: "stream",
+                }),
+              }).catch(() => undefined);
+            }
           }
           if (typeof durSec === "number" && durSec > 0 && isFinite(durSec)) {
             const durMs = Math.round(durSec * 1000);
@@ -291,11 +344,40 @@ export function Player() {
     }
   }, [volume, isMuted, sdkMode]);
 
-  if (!currentTrack) {
-    return null;
-  }
+  const handleTogglePlay = () => {
+    if (!currentTrack) return;
+
+    if (activeEngineRef.current === "youtube" && ytPlayerRef.current) {
+      try {
+        const state = ytPlayerRef.current.getPlayerState?.();
+        // 1 = PLAYING, 3 = BUFFERING
+        if (state === 1 || state === 3) {
+          ytPlayerRef.current.pauseVideo?.();
+          setIsPlaying(false);
+          return;
+        } else if (state === 2 || state === -1 || state === 0 || state === 5) {
+          ytPlayerRef.current.playVideo?.();
+          setIsPlaying(true);
+          return;
+        }
+      } catch {
+        // fallback
+      }
+    } else if (activeEngineRef.current === "preview" && audioRef.current) {
+      if (!audioRef.current.paused) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      } else {
+        audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      }
+      return;
+    }
+
+    setIsPlaying(!isPlaying);
+  };
 
   const handleToggleLike = () => {
+    if (!currentTrack) return;
     const next = !isLiked;
     toggleLike.mutate(next, {
       onSuccess: () => addToast({ title: next ? "Added to Liked Songs" : "Removed from Liked Songs", type: "success" }),
@@ -317,7 +399,47 @@ export function Player() {
   const progressPercent = durationMs > 0 ? (progressMs / durationMs) * 100 : 0;
 
   return (
-    <footer className="fixed bottom-0 left-0 right-0 z-40 px-4 pb-3 pt-1 pointer-events-none">
+    <>
+      {/* Invisible YouTube Player container for full audio stream - ALWAYS MOUNTED */}
+      <div
+        style={{
+          position: "fixed",
+          bottom: 0,
+          right: 0,
+          width: "1px",
+          height: "1px",
+          opacity: 0.001,
+          pointerEvents: "none",
+          zIndex: -999,
+        }}
+        aria-hidden="true"
+      >
+        <div id="sonara-yt-player-target" />
+      </div>
+
+      {/* Fallback HTML5 Audio Element for previews - ALWAYS MOUNTED */}
+      <audio
+        ref={audioRef}
+        preload="auto"
+        onTimeUpdate={() => {
+          if (activeEngineRef.current === "preview" && audioRef.current && isFinite(audioRef.current.currentTime)) {
+            setProgressMs(Math.round(audioRef.current.currentTime * 1000));
+          }
+        }}
+        onLoadedMetadata={() => {
+          if (activeEngineRef.current === "preview" && audioRef.current?.duration && isFinite(audioRef.current.duration)) {
+            usePlayerStore.setState({ durationMs: Math.round(audioRef.current.duration * 1000) });
+          }
+        }}
+        onEnded={() => {
+          if (activeEngineRef.current === "preview") {
+            playNext();
+          }
+        }}
+      />
+
+      {currentTrack && !isExpanded && (
+        <footer className="fixed bottom-0 left-0 right-0 z-40 px-4 pb-3 pt-1 pointer-events-none">
       <div className="max-w-7xl mx-auto pointer-events-auto">
         <div className="glass-panel border border-foreground/10 rounded-2xl md:rounded-3xl p-3 md:px-5 md:py-3 shadow-2xl backdrop-blur-2xl flex items-center justify-between gap-4">
           
@@ -349,8 +471,15 @@ export function Player() {
                   {currentTrack.artists?.map((a) => a.name).join(", ")}
                 </p>
                 {isFullTrackMode && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-cyan-500/10 text-cyan-500 font-semibold border border-cyan-500/20 shrink-0">
-                    Full Master
+                  <span className={cn(
+                    "text-[10px] px-1.5 py-0.5 rounded-md font-semibold border shrink-0",
+                    audioQuality === "lossless"
+                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
+                      : audioQuality === "high"
+                      ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                      : "bg-slate-500/10 text-slate-400 border-slate-500/20"
+                  )}>
+                    {audioQuality === "lossless" ? "Hi-Res Lossless" : audioQuality === "high" ? "High-Fi 320k" : "Standard AAC"}
                   </span>
                 )}
               </div>
@@ -394,7 +523,7 @@ export function Player() {
               </button>
 
               <button
-                onClick={() => setIsPlaying(!isPlaying)}
+                onClick={handleTogglePlay}
                 aria-label={isPlaying ? "Pause" : "Play"}
                 className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-foreground text-background flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all"
               >
@@ -509,43 +638,8 @@ export function Player() {
           </div>
         </div>
       </div>
-
-      {/* Invisible YouTube Player container for full audio stream */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: 0,
-          right: 0,
-          width: "1px",
-          height: "1px",
-          opacity: 0.001,
-          pointerEvents: "none",
-          zIndex: -999,
-        }}
-      >
-        <div id="sonara-yt-player-target" />
-      </div>
-
-      {/* Fallback HTML5 Audio Element for previews */}
-      <audio
-        ref={audioRef}
-        preload="auto"
-        onTimeUpdate={() => {
-          if (activeEngineRef.current === "preview" && audioRef.current && isFinite(audioRef.current.currentTime)) {
-            setProgressMs(Math.round(audioRef.current.currentTime * 1000));
-          }
-        }}
-        onLoadedMetadata={() => {
-          if (activeEngineRef.current === "preview" && audioRef.current?.duration && isFinite(audioRef.current.duration)) {
-            usePlayerStore.setState({ durationMs: Math.round(audioRef.current.duration * 1000) });
-          }
-        }}
-        onEnded={() => {
-          if (activeEngineRef.current === "preview") {
-            playNext();
-          }
-        }}
-      />
     </footer>
-  );
+  )}
+</>
+);
 }

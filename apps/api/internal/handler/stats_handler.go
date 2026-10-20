@@ -54,8 +54,8 @@ func (h *StatsHandler) RecordPlay(w http.ResponseWriter, r *http.Request) {
 	if in.ListenedMs < 0 || in.ListenedMs > 24*3600*1000 {
 		in.ListenedMs = 0
 	}
-	if in.Source != "spotify" && in.Source != "preview" {
-		in.Source = "spotify"
+	if in.Source == "" {
+		in.Source = "stream"
 	}
 	if err := h.historyRepo.RecordPlay(r.Context(), user.ID, &in.Track, in.ListenedMs, in.Source); err != nil {
 		writeError(w, http.StatusInternalServerError, "record_failed", "Could not record this play.")

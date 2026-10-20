@@ -90,11 +90,15 @@ export interface SessionResponse {
   authenticated: boolean;
   user?: UserProfile | null;
   is_premium?: boolean;
+  token?: string;
+  session_id?: string;
 }
 
 export interface AuthResponse {
   authenticated: boolean;
   user: UserProfile;
+  token?: string;
+  session_id?: string;
 }
 
 export interface LoginPayload {

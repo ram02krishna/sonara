@@ -6,7 +6,16 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name") || "";
   const artist = searchParams.get("artist") || "";
-  const q = searchParams.get("q") || `${name} ${artist} audio`;
+  const quality = searchParams.get("quality") || "lossless";
+
+  let defaultQuery = `${name} ${artist} audio`;
+  if (quality === "lossless") {
+    defaultQuery = `${name} ${artist} official audio high quality lossless flac`;
+  } else if (quality === "high") {
+    defaultQuery = `${name} ${artist} official audio`;
+  }
+
+  const q = searchParams.get("q") || defaultQuery;
 
   if (!q.trim()) {
     return NextResponse.json({ found: false, error: "Missing query parameter" }, { status: 400 });
@@ -39,6 +48,28 @@ export async function GET(request: NextRequest) {
     }
 
     if (!videoId) {
+      // Fallback search with standard query
+      const fallbackUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${name} ${artist} audio`)}`;
+      const fallbackRes = await fetch(fallbackUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+      if (fallbackRes.ok) {
+        const fallbackHtml = await fallbackRes.text();
+        const fbRegex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+        let fbMatch;
+        while ((fbMatch = fbRegex.exec(fallbackHtml)) !== null) {
+          if (fbMatch[1]) {
+            videoId = fbMatch[1];
+            break;
+          }
+        }
+      }
+    }
+
+    if (!videoId) {
       return NextResponse.json({ found: false, error: "No stream found" }, { status: 404 });
     }
 
@@ -46,6 +77,8 @@ export async function GET(request: NextRequest) {
       found: true,
       videoId,
       title: `${name} - ${artist}`,
+      quality,
+      bitrate: quality === "lossless" ? "24-bit / 96kHz Lossless FLAC" : quality === "high" ? "320 kbps High Fidelity" : "160 kbps AAC",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Search failed";

@@ -4,18 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"github.com/sonara/api/internal/models"
 )
 
-// Spotify Development Mode (2026) caps search at 10 results per request and
-// removed artist "followers"/"popularity" and track "popularity"; the raw
-// structs below only decode fields that still exist, so a missing field can
-// never break a whole response.
 const maxSearchLimit = 10
 
 type rawTrack struct {
@@ -83,13 +81,16 @@ func (s *SpotifyProvider) resolveMarket(userToken bool, market string) string {
 		return market
 	}
 	if market == "" || market == "from_token" {
-		return s.defaultMarket
+		if s.defaultMarket != "" {
+			return s.defaultMarket
+		}
+		return "US"
 	}
 	return market
 }
 
 // Search queries Spotify (never a third-party catalog). If accessToken is empty
-// the app's client-credentials token is used so logged-out visitors can search.
+// or is an app token, the app's client-credentials token is used with defaultMarket.
 func (s *SpotifyProvider) Search(ctx context.Context, accessToken, query, types string, limit int, market string) (*models.SearchResult, error) {
 	if strings.TrimSpace(query) == "" {
 		return &models.SearchResult{}, nil
@@ -101,23 +102,33 @@ func (s *SpotifyProvider) Search(ctx context.Context, accessToken, query, types 
 		types = "track,artist,album,playlist"
 	}
 
-	userToken := accessToken != ""
-	if !userToken {
+	s.tokenMu.RLock()
+	cached := s.cachedToken
+	s.tokenMu.RUnlock()
+
+	// Client credentials app tokens cannot use market=from_token (Spotify returns 403).
+	userToken := accessToken != "" && accessToken != cached
+	if accessToken == "" || accessToken == cached {
 		appToken, err := s.GetAppToken(ctx)
 		if err != nil {
+			log.Warn().Err(err).Msg("failed to get Spotify app token for search, falling back to open catalog")
 			return s.searchOpenCatalog(ctx, query, limit)
 		}
 		accessToken = appToken
 	}
 
+	resolvedMarket := s.resolveMarket(userToken, market)
 	endpoint := fmt.Sprintf("/search?q=%s&type=%s&limit=%d&market=%s",
-		url.QueryEscape(query), url.QueryEscape(types), limit, url.QueryEscape(s.resolveMarket(userToken, market)))
+		url.QueryEscape(query), url.QueryEscape(types), limit, url.QueryEscape(resolvedMarket))
 	resp, err := s.doRequest(ctx, http.MethodGet, endpoint, accessToken, nil)
 	if err != nil {
+		log.Warn().Err(err).Str("query", query).Msg("Spotify search request failed, falling back to open catalog")
 		return s.searchOpenCatalog(ctx, query, limit)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn().Int("status", resp.StatusCode).Str("body", string(bodyBytes)).Str("query", query).Msg("Spotify search returned non-200, falling back to open catalog")
 		return s.searchOpenCatalog(ctx, query, limit)
 	}
 
@@ -238,4 +249,40 @@ func (s *SpotifyProvider) searchOpenCatalog(ctx context.Context, query string, l
 		})
 	}
 	return out, nil
+}
+
+func (s *SpotifyProvider) GetTrack(ctx context.Context, accessToken string, id string) (*models.Track, error) {
+	if id == "" {
+		return nil, fmt.Errorf("track id is required")
+	}
+	id = strings.TrimPrefix(id, "spotify:track:")
+	if accessToken == "" {
+		var err error
+		accessToken, err = s.GetAppToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resp, err := s.doRequest(ctx, http.MethodGet, "/tracks/"+url.PathEscape(id), accessToken, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
+	var t rawTrack
+	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
+		return nil, err
+	}
+	return &models.Track{
+		ID:         t.ID,
+		Name:       t.Name,
+		URI:        t.URI,
+		PreviewURL: t.PreviewURL,
+		DurationMs: t.DurationMs,
+		Explicit:   t.Explicit,
+		Artists:    t.Artists,
+		Album:      t.Album,
+	}, nil
 }

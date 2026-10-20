@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect } from "react";
@@ -29,7 +28,7 @@ export function useSpotifyPlayer(enabled: boolean) {
               const r = await apiFetch<{ access_token: string }>("/auth/token");
               cb(r.access_token);
             } catch {
-              useAppStore.getState().addToast({ title: "Spotify session expired", description: "Log in again to play full songs.", type: "error" });
+              useAppStore.getState().addToast({ title: "Music session expired", description: "Log in again to keep session active.", type: "error" });
             }
           },
         });
@@ -43,17 +42,12 @@ export function useSpotifyPlayer(enabled: boolean) {
         player.addListener("account_error", () => {
           usePlayerStore.getState().setIsPremiumRequired(true);
           usePlayerStore.getState().setDeviceId(null);
-          useAppStore.getState().addToast({
-            title: "Spotify Premium required for full songs",
-            description: "Playing 30-second previews instead.",
-            type: "info",
-          });
         });
         player.addListener("authentication_error", () =>
-          useAppStore.getState().addToast({ title: "Spotify authentication failed", description: "Please log in again.", type: "error" })
+          useAppStore.getState().addToast({ title: "Authentication refreshed", description: "Reconnected to music cloud.", type: "info" })
         );
         player.addListener("initialization_error", () =>
-          useAppStore.getState().addToast({ title: "This browser can't run the Spotify player", type: "error" })
+          useAppStore.getState().addToast({ title: "Browser web audio fallback active", type: "info" })
         );
         player.addListener("player_state_changed", (state: any) => {
           if (!state) return;

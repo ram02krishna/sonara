@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 
 const LANGUAGES = ["English", "Hindi", "Punjabi", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Marathi", "Gujarati", "Urdu", "Korean", "Japanese", "Spanish", "Portuguese", "Arabic", "French", "German", "Turkish"];
 const GENRES = ["Pop", "Rock", "Hip Hop", "R&B", "EDM", "Lofi", "Indie", "Jazz", "Classical", "Metal", "Country", "Reggae", "Afrobeats", "Latin", "Devotional", "Sufi", "Ghazal", "Soul", "Blues", "Folk"];
-const COUNTRIES: [string, string][] = [["", "Auto-detect from Spotify"], ["IN", "India"], ["US", "United States"], ["GB", "United Kingdom"], ["CA", "Canada"], ["AU", "Australia"], ["DE", "Germany"], ["FR", "France"], ["ES", "Spain"], ["BR", "Brazil"], ["MX", "Mexico"], ["JP", "Japan"], ["KR", "South Korea"], ["AE", "United Arab Emirates"], ["ID", "Indonesia"], ["NG", "Nigeria"], ["ZA", "South Africa"]];
+const COUNTRIES: [string, string][] = [["", "Auto-detect (Global)"], ["IN", "India"], ["US", "United States"], ["GB", "United Kingdom"], ["CA", "Canada"], ["AU", "Australia"], ["DE", "Germany"], ["FR", "France"], ["ES", "Spain"], ["BR", "Brazil"], ["MX", "Mexico"], ["JP", "Japan"], ["KR", "South Korea"], ["AE", "United Arab Emirates"], ["ID", "Indonesia"], ["NG", "Nigeria"], ["ZA", "South Africa"]];
 
 function Chip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
@@ -20,7 +20,7 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
       className={cn(
         "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium border transition-all",
         active
-          ? "bg-gradient-to-r from-violet-600 to-cyan-500 text-white border-transparent shadow-md shadow-violet-700/30"
+          ? "bg-blue-600 hover:bg-blue-500 text-white border-blue-500 shadow-md shadow-blue-600/25 font-semibold"
           : "glass-pill text-foreground hover:bg-foreground/10"
       )}
     >
@@ -61,7 +61,8 @@ export default function OnboardingPage() {
   const toggle = (list: string[], set: (v: string[]) => void, v: string) =>
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
-  const canSave = languages.length + genres.length + artists.length > 0;
+  const totalSelected = languages.length + genres.length + artists.length;
+  const canSave = totalSelected > 0;
 
   const onSave = () =>
     save.mutate(
@@ -82,13 +83,13 @@ export default function OnboardingPage() {
   };
 
   return (
-    <div className="p-4 md:p-8 max-w-3xl mx-auto space-y-10">
+    <div className="p-4 md:p-8 max-w-3xl mx-auto space-y-10 pb-20">
       <header className="space-y-2">
         <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-foreground">
           Make Sonara <span className="text-gradient">yours</span>
         </h1>
         <p className="text-muted-foreground">
-          Everyone listens differently. Tell us what you love and your home page is built from it, mixed with what you actually play on Spotify.
+          Everyone listens differently. Tell us what you love and your home page is built around your taste.
         </p>
       </header>
 
@@ -118,7 +119,7 @@ export default function OnboardingPage() {
             value={artistQuery}
             onChange={(e) => setArtistQuery(e.target.value)}
             placeholder="Search any artist, in any language…"
-            className="w-full pl-10 pr-10 py-3 rounded-2xl glass-pill text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50"
+            className="w-full pl-10 pr-10 py-3 rounded-2xl glass-pill text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-blue-500/50"
           />
           {isFetching && <Loader2 className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />}
         </div>
@@ -140,9 +141,9 @@ export default function OnboardingPage() {
         {artists.length > 0 && (
           <div className="flex flex-wrap gap-2 pt-1">
             {artists.map((a) => (
-              <span key={a.id || a.name} className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-full bg-foreground/10 text-sm text-foreground">
+              <span key={a.id || a.name} className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/20 text-sm font-medium">
                 {a.name}
-                <button aria-label={`Remove ${a.name}`} onClick={() => setArtists(artists.filter((x) => x.name !== a.name))} className="p-0.5 rounded-full hover:bg-foreground/15">
+                <button aria-label={`Remove ${a.name}`} onClick={() => setArtists(artists.filter((x) => x.name !== a.name))} className="p-0.5 rounded-full hover:bg-blue-500/20">
                   <X className="w-3.5 h-3.5" />
                 </button>
               </span>
@@ -156,7 +157,7 @@ export default function OnboardingPage() {
         <select
           value={country}
           onChange={(e) => setCountry(e.target.value)}
-          className="w-full md:w-72 px-4 py-3 rounded-2xl glass-pill text-sm text-foreground outline-none bg-transparent"
+          className="w-full md:w-72 px-4 py-3 rounded-2xl glass-card border border-foreground/10 text-sm text-foreground outline-none bg-card focus:ring-2 focus:ring-blue-500/50"
         >
           {COUNTRIES.map(([code, name]) => (
             <option key={code} value={code} className="bg-popover text-popover-foreground">
@@ -164,20 +165,36 @@ export default function OnboardingPage() {
             </option>
           ))}
         </select>
-        <p className="text-xs text-muted-foreground">Spotify no longer shares your country with apps, so choose it here to see music available where you live.</p>
+        <p className="text-xs text-muted-foreground">Select your region to discover songs and releases available in your area.</p>
       </section>
 
-      <div className="flex items-center gap-3 sticky bottom-28 md:bottom-24">
-        <button
-          onClick={onSave}
-          disabled={!canSave || save.isPending}
-          className="px-6 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-sm shadow-lg shadow-violet-700/30 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95 transition-transform inline-flex items-center gap-2"
-        >
-          {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />} Build my home
-        </button>
-        <button onClick={onSkip} className="px-4 py-3 rounded-2xl text-sm text-muted-foreground hover:text-foreground">
-          Skip for now
-        </button>
+      {/* Action Footer */}
+      <div className="pt-6 border-t border-foreground/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="text-xs text-muted-foreground">
+          {canSave ? (
+            <span className="text-blue-500 dark:text-blue-400 font-medium">
+              {totalSelected} preference{totalSelected === 1 ? "" : "s"} selected
+            </span>
+          ) : (
+            <span>Select a few languages, genres, or artists to personalize your experience</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onSkip}
+            className="px-4 py-2.5 rounded-full text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
+          >
+            Skip for now
+          </button>
+          <button
+            onClick={onSave}
+            disabled={!canSave || save.isPending}
+            className="px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold text-sm shadow-md shadow-blue-600/25 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98] transition-all inline-flex items-center gap-2"
+          >
+            {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+            <span>Build my home</span>
+          </button>
+        </div>
       </div>
     </div>
   );
