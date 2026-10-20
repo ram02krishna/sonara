@@ -1,0 +1,638 @@
+openapi: 3.1.0
+info:
+  title: Sonara Music API
+  version: 1.0.0
+  description: Backend For Frontend (BFF) API specification for Sonara Music Streaming platform.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+
+paths:
+  /auth/login:
+    get:
+      summary: Initiate Spotify OAuth PKCE Flow
+      operationId: authLogin
+      parameters:
+        - name: redirect
+          in: query
+          schema:
+            type: string
+          description: Return URL after authentication
+      responses:
+        '302':
+          description: Redirect to Spotify authorize endpoint
+
+  /auth/callback:
+    get:
+      summary: Spotify OAuth Callback
+      operationId: authCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirects to frontend with session cookie set
+
+  /auth/logout:
+    post:
+      summary: Destroy current session and clear cookies
+      operationId: authLogout
+      responses:
+        '200':
+          description: Successfully logged out
+
+  /auth/session:
+    get:
+      summary: Check current session status
+      operationId: getSession
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /me:
+    get:
+      summary: Get current authenticated user profile
+      operationId: getCurrentUser
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /me/player:
+    get:
+      summary: Get current playback state
+      operationId: getPlaybackState
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+        '204':
+          description: No active playback
+
+  /me/player/play:
+    put:
+      summary: Resume playback or play given context/URIs
+      operationId: startOrResumePlayback
+      parameters:
+        - name: device_id
+          in: query
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context_uri:
+                  type: string
+                uris:
+                  type: array
+                  items:
+                    type: string
+                offset:
+                  type: object
+                position_ms:
+                  type: integer
+      responses:
+        '204':
+          description: Playback commanded
+
+  /me/player/pause:
+    put:
+      summary: Pause playback
+      operationId: pausePlayback
+      parameters:
+        - name: device_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Paused
+
+  /me/player/next:
+    post:
+      summary: Skip to next track
+      operationId: skipNext
+      responses:
+        '204':
+          description: Skipped
+
+  /me/player/previous:
+    post:
+      summary: Skip to previous track
+      operationId: skipPrevious
+      responses:
+        '204':
+          description: Skipped
+
+  /me/player/seek:
+    put:
+      summary: Seek to position in track
+      operationId: seekPosition
+      parameters:
+        - name: position_ms
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Position seeked
+
+  /me/player/volume:
+    put:
+      summary: Set playback volume
+      operationId: setVolume
+      parameters:
+        - name: volume_percent
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+      responses:
+        '204':
+          description: Volume updated
+
+  /me/player/devices:
+    get:
+      summary: Get available playback devices
+      operationId: getDevices
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+
+  /me/player/transfer:
+    put:
+      summary: Transfer playback to active device
+      operationId: transferPlayback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_ids]
+              properties:
+                device_ids:
+                  type: array
+                  items:
+                    type: string
+                play:
+                  type: boolean
+      responses:
+        '204':
+          description: Device transferred
+
+  /me/top/artists:
+    get:
+      summary: Get user top artists
+      operationId: getTopArtists
+      parameters:
+        - name: time_range
+          in: query
+          schema:
+            type: string
+            enum: [short_term, medium_term, long_term]
+            default: medium_term
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Artist'
+
+  /me/top/tracks:
+    get:
+      summary: Get user top tracks
+      operationId: getTopTracks
+      parameters:
+        - name: time_range
+          in: query
+          schema:
+            type: string
+            enum: [short_term, medium_term, long_term]
+            default: medium_term
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Track'
+
+  /me/recently-played:
+    get:
+      summary: Get recently played tracks
+      operationId: getRecentlyPlayed
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlayHistoryItem'
+
+  /search:
+    get:
+      summary: Unified search tracks, artists, albums, playlists
+      operationId: searchCatalog
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            default: "track,artist,album,playlist"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResult'
+
+  /lyrics:
+    get:
+      summary: Get synced and plain lyrics via LRCLIB
+      operationId: getLyrics
+      parameters:
+        - name: track_name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: artist_name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: duration_ms
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Lyrics'
+        '404':
+          description: No lyrics found
+
+  /stats:
+    get:
+      summary: Aggregated user listening analytics, genres, streaks
+      operationId: getUserStats
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [4weeks, 6months, alltime]
+            default: 4weeks
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsReport'
+
+components:
+  responses:
+    UnauthorizedError:
+      description: Session expired or not authenticated
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: integer
+
+    SessionResponse:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated:
+          type: boolean
+        user:
+          $ref: '#/components/schemas/UserProfile'
+        is_premium:
+          type: boolean
+
+    UserProfile:
+      type: object
+      required: [id, display_name, email]
+      properties:
+        id:
+          type: string
+        spotify_id:
+          type: string
+        display_name:
+          type: string
+        email:
+          type: string
+        avatar_url:
+          type: string
+        product:
+          type: string
+          enum: [premium, free, open]
+        country:
+          type: string
+
+    Track:
+      type: object
+      required: [id, name, artists, album, duration_ms, uri]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        uri:
+          type: string
+        preview_url:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+        explicit:
+          type: boolean
+        popularity:
+          type: integer
+        artists:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtistSummary'
+        album:
+          $ref: '#/components/schemas/AlbumSummary'
+        is_liked:
+          type: boolean
+
+    ArtistSummary:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        uri:
+          type: string
+
+    Artist:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        uri:
+          type: string
+        genres:
+          type: array
+          items:
+            type: string
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/Image'
+        followers:
+          type: integer
+        popularity:
+          type: integer
+
+    AlbumSummary:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        uri:
+          type: string
+        release_date:
+          type: string
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/Image'
+
+    Image:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+        height:
+          type: integer
+          nullable: true
+        width:
+          type: integer
+          nullable: true
+
+    Device:
+      type: object
+      required: [id, name, type, is_active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        is_active:
+          type: boolean
+        volume_percent:
+          type: integer
+
+    PlaybackState:
+      type: object
+      properties:
+        device:
+          $ref: '#/components/schemas/Device'
+        is_playing:
+          type: boolean
+        item:
+          $ref: '#/components/schemas/Track'
+        progress_ms:
+          type: integer
+        shuffle_state:
+          type: boolean
+        repeat_state:
+          type: string
+          enum: [off, track, context]
+
+    PlayHistoryItem:
+      type: object
+      required: [track, played_at]
+      properties:
+        track:
+          $ref: '#/components/schemas/Track'
+        played_at:
+          type: string
+          format: date-time
+
+    SearchResult:
+      type: object
+      properties:
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+        artists:
+          type: array
+          items:
+            $ref: '#/components/schemas/Artist'
+        albums:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlbumSummary'
+        playlists:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              images:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Image'
+              owner_name:
+                type: string
+
+    LyricsLine:
+      type: object
+      required: [time_seconds, words]
+      properties:
+        time_seconds:
+          type: number
+        words:
+          type: string
+
+    Lyrics:
+      type: object
+      properties:
+        id:
+          type: integer
+        track_name:
+          type: string
+        artist_name:
+          type: string
+        synced:
+          type: boolean
+        plain_lyrics:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/LyricsLine'
+
+    StatsReport:
+      type: object
+      required: [total_minutes, streak_days, top_genres, daily_listening]
+      properties:
+        total_minutes:
+          type: integer
+        streak_days:
+          type: integer
+        top_genres:
+          type: array
+          items:
+            type: object
+            properties:
+              genre:
+                type: string
+              percentage:
+                type: number
+        daily_listening:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+              hours:
+                type: number

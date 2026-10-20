@@ -1,0 +1,24 @@
+# Multi-stage Dockerfile for Go API
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+COPY apps/api/go.mod apps/api/go.sum* ./apps/api/
+WORKDIR /app/apps/api
+RUN go mod download
+
+COPY apps/api/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /sonara-api ./cmd/server
+
+FROM alpine:3.19 AS runner
+WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata curl
+COPY --from=builder /sonara-api /app/sonara-api
+COPY apps/api/migrations /app/migrations
+
+EXPOSE 8080
+USER 10001:10001
+
+ENTRYPOINT ["/app/sonara-api"]
