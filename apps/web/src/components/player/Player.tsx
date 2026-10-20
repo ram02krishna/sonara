@@ -48,15 +48,43 @@ export function Player() {
   const { addToast } = useAppStore();
   const [isLiked, setIsLiked] = useState(false);
 
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
+
   // Sync like state
   useEffect(() => {
     setIsLiked(Boolean(currentTrack?.is_liked));
   }, [currentTrack]);
 
-  // Simulated ticker when playing
+  // Handle audio source change and play/pause
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (currentTrack?.preview_url) {
+      if (audio.src !== currentTrack.preview_url) {
+        audio.src = currentTrack.preview_url;
+        audio.load();
+      }
+      if (isPlaying) {
+        audio.play().catch((err) => {
+          console.warn("Audio autoplay blocked by browser policy:", err);
+        });
+      } else {
+        audio.pause();
+      }
+    }
+  }, [currentTrack, isPlaying]);
+
+  // Sync volume and mute directly with audio element
+  useEffect(() => {
+    if (!audioRef.current) return;
+    audioRef.current.volume = isMuted ? 0 : Math.max(0, Math.min(1, volume / 100));
+  }, [volume, isMuted]);
+
+  // Fallback ticker if no preview_url exists
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isPlaying && durationMs > 0) {
+    if (isPlaying && durationMs > 0 && !currentTrack?.preview_url) {
       interval = setInterval(() => {
         setProgressMs(Math.min(durationMs, progressMs + 1000));
         if (progressMs >= durationMs) {
@@ -65,7 +93,7 @@ export function Player() {
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, progressMs, durationMs, playNext, setProgressMs]);
+  }, [isPlaying, progressMs, durationMs, playNext, setProgressMs, currentTrack]);
 
   if (!currentTrack) {
     return null;
@@ -192,7 +220,11 @@ export function Player() {
                   const rect = e.currentTarget.getBoundingClientRect();
                   const clickX = e.clientX - rect.left;
                   const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-                  setProgressMs(Math.round(ratio * durationMs));
+                  const newTimeMs = Math.round(ratio * durationMs);
+                  setProgressMs(newTimeMs);
+                  if (audioRef.current) {
+                    audioRef.current.currentTime = newTimeMs / 1000;
+                  }
                 }}
               >
                 <div
@@ -270,6 +302,26 @@ export function Player() {
           </div>
         </div>
       </div>
+
+      {/* HTML5 Audio Streaming Engine */}
+      <audio
+        ref={audioRef}
+        src={currentTrack?.preview_url || undefined}
+        preload="auto"
+        onTimeUpdate={() => {
+          if (audioRef.current && isFinite(audioRef.current.currentTime)) {
+            setProgressMs(Math.round(audioRef.current.currentTime * 1000));
+          }
+        }}
+        onLoadedMetadata={() => {
+          if (audioRef.current && audioRef.current.duration && isFinite(audioRef.current.duration)) {
+            usePlayerStore.setState({ durationMs: Math.round(audioRef.current.duration * 1000) });
+          }
+        }}
+        onEnded={() => {
+          playNext();
+        }}
+      />
     </footer>
   );
 }

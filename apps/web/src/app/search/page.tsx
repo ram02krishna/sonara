@@ -51,13 +51,11 @@ export default function SearchPage() {
     let isMounted = true;
     setIsLoading(true);
 
-    apiFetch<SearchResult>("/search", {
-      params: {
-        q: debouncedQuery,
-        type: activeFilter === "all" ? "track,artist,album,playlist" : activeFilter,
-        limit: 15,
-      },
-    })
+    fetch(`/api/search?q=${encodeURIComponent(debouncedQuery)}&limit=15`)
+      .then((res) => {
+        if (!res.ok) throw new Error("Search failed");
+        return res.json();
+      })
       .then((data) => {
         if (isMounted) {
           setResults(data);

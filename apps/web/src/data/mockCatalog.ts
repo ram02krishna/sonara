@@ -5,7 +5,7 @@ export const MOCK_TRACKS: Track[] = [
     id: "track-1",
     name: "Starboy",
     uri: "spotify:track:7MXVkk9YM5IZxh0wAE2Upv",
-    preview_url: "https://p.scdn.co/mp3-preview/starboy.mp3",
+    preview_url: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/11/71/d6/1171d6ad-3c96-e027-2af6-58028426588c/mzaf_15137631797407745471.plus.aac.p.m4a",
     duration_ms: 230453,
     popularity: 94,
     artists: [
@@ -26,7 +26,7 @@ export const MOCK_TRACKS: Track[] = [
     id: "track-2",
     name: "Midnight City",
     uri: "spotify:track:6GyFP1nfCDB87D2bGGF6dH",
-    preview_url: "https://p.scdn.co/mp3-preview/midnight-city.mp3",
+    preview_url: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/24/09/79/2409794c-3d5d-af26-580e-7dc00ee4f207/mzaf_369629549966021675.plus.aac.p.m4a",
     duration_ms: 243266,
     popularity: 88,
     artists: [
@@ -46,7 +46,7 @@ export const MOCK_TRACKS: Track[] = [
     id: "track-3",
     name: "Levitating",
     uri: "spotify:track:463CkQjx2Zk1yXoBu1bsPrem",
-    preview_url: "https://p.scdn.co/mp3-preview/levitating.mp3",
+    preview_url: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/59/dc/4d/59dc4dda-93ff-8f1c-c536-f005f6ea6af5/mzaf_3066686759813252385.plus.aac.p.m4a",
     duration_ms: 203807,
     popularity: 91,
     artists: [
