@@ -169,9 +169,9 @@ func (h *MusicHandler) Search(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	token, _, _ := h.resolveToken(r)
 
-	if token != "" && q != "" {
+	if q != "" {
 		res, err := h.provider.Search(r.Context(), token, q, types, limit)
-		if err == nil {
+		if err == nil && res != nil {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(res)
 			return
