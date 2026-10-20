@@ -27,13 +27,19 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
+// Runs before first paint so the saved/system theme is applied with no flash.
+const themeInitScript = `(function(){try{var t=localStorage.getItem('sonara-theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}var d=document.documentElement;d.setAttribute('data-theme',t);d.classList.toggle('dark',t==='dark');}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className={`${inter.variable} font-sans bg-background text-foreground antialiased`}>
         <Providers>{children}</Providers>
       </body>

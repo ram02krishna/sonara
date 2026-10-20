@@ -2,99 +2,25 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/sonara/api/internal/config"
-	"github.com/sonara/api/internal/provider"
-	"github.com/sonara/api/internal/repository"
 	"github.com/sonara/api/internal/service"
 )
 
 type AuthHandler struct {
 	cfg         *config.Config
 	authService *service.AuthService
-	userRepo    *repository.UserRepository
-	spotify     *provider.SpotifyProvider
 }
 
-func NewAuthHandler(
-	cfg *config.Config,
-	authService *service.AuthService,
-	userRepo *repository.UserRepository,
-	spotify *provider.SpotifyProvider,
-) *AuthHandler {
+func NewAuthHandler(cfg *config.Config, authService *service.AuthService) *AuthHandler {
 	return &AuthHandler{
 		cfg:         cfg,
 		authService: authService,
-		userRepo:    userRepo,
-		spotify:     spotify,
 	}
 }
 
-const spotifyScopes = "user-read-private user-read-email user-read-playback-state user-modify-playback-state user-read-currently-playing streaming user-read-recently-played user-top-read playlist-read-private playlist-modify-public playlist-modify-private user-library-read user-library-modify"
-
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	verifier, challenge, state, err := h.authService.GeneratePKCE()
-	if err != nil {
-		http.Error(w, "Failed to generate PKCE tokens", http.StatusInternalServerError)
-		return
-	}
-
-	if err := h.authService.StorePKCEState(r.Context(), state, verifier); err != nil {
-		http.Error(w, "Failed to store OAuth state", http.StatusInternalServerError)
-		return
-	}
-
-	authURL := fmt.Sprintf(
-		"https://accounts.spotify.com/authorize?response_type=code&client_id=%s&scope=%s&redirect_uri=%s&state=%s&code_challenge_method=S256&code_challenge=%s",
-		url.QueryEscape(h.cfg.SpotifyClientID),
-		url.QueryEscape(spotifyScopes),
-		url.QueryEscape(h.cfg.SpotifyRedirectURI),
-		url.QueryEscape(state),
-		url.QueryEscape(challenge),
-	)
-
-	http.Redirect(w, r, authURL, http.StatusFound)
-}
-
-func (h *AuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	state := r.URL.Query().Get("state")
-
-	if code == "" || state == "" {
-		http.Error(w, "Missing code or state in callback", http.StatusBadRequest)
-		return
-	}
-
-	verifier, err := h.authService.GetAndClearPKCEState(r.Context(), state)
-	if err != nil {
-		http.Error(w, "Invalid OAuth state", http.StatusUnauthorized)
-		return
-	}
-
-	tokens, err := h.authService.ExchangeCode(r.Context(), code, verifier)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Token exchange failed: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Fetch user profile from Spotify
-	userProfile, err := h.spotify.GetProfile(r.Context(), tokens.AccessToken)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get Spotify profile: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	sessionID, err := h.authService.SaveUserTokens(r.Context(), userProfile, tokens)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Set httpOnly session cookie
+func (h *AuthHandler) setSessionCookie(w http.ResponseWriter, sessionID string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sonara_session",
 		Value:    sessionID,
@@ -104,19 +30,79 @@ func (h *AuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.cfg.AppEnv == "production",
 		SameSite: http.SameSiteLaxMode,
 	})
-
-	// Redirect back to Next.js frontend
-	frontendURL := strings.Split(h.cfg.AllowedOrigins, ",")[0]
-	if frontendURL == "" {
-		frontendURL = "http://localhost:3000"
-	}
-	http.Redirect(w, r, frontendURL+"/", http.StatusFound)
 }
 
+type authRequest struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+}
+
+// Signup creates a new native Sonara account
+func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	user, sessionID, err := h.authService.Register(r.Context(), req.Email, req.Password, req.DisplayName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "signup_failed", err.Error())
+		return
+	}
+
+	h.setSessionCookie(w, sessionID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+// Login authenticates with Sonara credentials
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	user, sessionID, err := h.authService.Login(r.Context(), req.Email, req.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
+		return
+	}
+
+	h.setSessionCookie(w, sessionID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+// Guest creates an instant listener profile with 1 click
+func (h *AuthHandler) Guest(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	user, sessionID, err := h.authService.GuestLogin(r.Context(), req.DisplayName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "guest_failed", err.Error())
+		return
+	}
+
+	h.setSessionCookie(w, sessionID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+// Logout clears the session and cookie
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("sonara_session")
 	if err == nil && cookie.Value != "" {
-		_ = h.userRepo.DeleteSession(r.Context(), cookie.Value)
+		_ = h.authService.Logout(r.Context(), cookie.Value)
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -127,35 +113,27 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 	})
 
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"message": "logged out"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }
 
+// Session returns the current authenticated Sonara user
 func (h *AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("sonara_session")
-	if err != nil || cookie.Value == "" {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"authenticated": false,
-			"is_premium":    false,
-		})
-		return
+	if err == nil && cookie.Value != "" {
+		user, err := h.authService.GetUserBySession(r.Context(), cookie.Value)
+		if err == nil && user != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"authenticated": true,
+				"is_premium":    true,
+				"user":          user,
+			})
+			return
+		}
 	}
 
-	user, err := h.userRepo.GetUserBySession(r.Context(), cookie.Value)
-	if err != nil || user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"authenticated": false,
-			"is_premium":    false,
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"authenticated": true,
-		"is_premium":    user.Product == "premium",
-		"user":          user,
+	// Unauthenticated
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"authenticated": false,
+		"user":          nil,
 	})
 }

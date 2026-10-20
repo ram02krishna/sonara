@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/sonara/api/internal/config"
+	"github.com/sonara/api/internal/dashboard"
 	"github.com/sonara/api/internal/handler"
 	"github.com/sonara/api/internal/provider"
 	"github.com/sonara/api/internal/repository"
@@ -50,6 +51,10 @@ func main() {
 		if err != nil {
 			log.Warn().Err(err).Msg("Postgres connection failed, running in in-memory fallback mode")
 			dbPool = nil
+		} else if pingErr := dbPool.Ping(ctx); pingErr != nil {
+			log.Warn().Err(pingErr).Msg("Postgres ping failed (check credentials/server), running in in-memory fallback mode")
+			dbPool.Close()
+			dbPool = nil
 		} else {
 			log.Info().Msg("PostgreSQL connected successfully")
 		}
@@ -70,17 +75,39 @@ func main() {
 
 	// Providers & Repositories
 	userRepo := repository.NewUserRepository(dbPool)
+	if err := userRepo.EnsureSchema(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("could not ensure user schema")
+	}
 	historyRepo := repository.NewHistoryRepository(dbPool)
-	authService := service.NewAuthService(cfg, userRepo, rdb)
+	if err := historyRepo.EnsureSchema(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("could not ensure play_history.listened_ms column")
+	}
+	prefsRepo := repository.NewPreferencesRepository(dbPool)
+	if err := prefsRepo.EnsureSchema(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("could not ensure user_preferences table")
+	}
+	libraryRepo := repository.NewLibraryRepository(dbPool)
+	if err := libraryRepo.EnsureSchema(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("could not ensure user_library table")
+	}
 
-	spotifyProvider := provider.NewSpotifyProvider(cfg.SpotifyClientID, cfg.SpotifyClientSecret)
+	authService := service.NewAuthService(cfg, userRepo, rdb)
+	spotifyProvider := provider.NewSpotifyProvider(cfg.SpotifyClientID, cfg.SpotifyClientSecret, cfg.SpotifyDefaultMarket)
+	previewClient := provider.NewITunesPreviewClient()
+
+	var dashCache dashboard.Cache = dashboard.NewMemoryCache()
+	if rdb != nil {
+		dashCache = dashboard.NewRedisCache(rdb)
+	}
+	dashBuilder := dashboard.NewBuilder(spotifyProvider, dashCache)
 	lrclibClient := provider.NewLRCLIBClient(cfg.LRCLIBApiURL)
 
 	// Handlers
-	authHandler := handler.NewAuthHandler(cfg, authService, userRepo, spotifyProvider)
-	musicHandler := handler.NewMusicHandler(userRepo, authService, spotifyProvider)
+	authHandler := handler.NewAuthHandler(cfg, authService)
+	musicHandler := handler.NewMusicHandler(userRepo, prefsRepo, historyRepo, libraryRepo, authService, spotifyProvider, previewClient)
+	dashboardHandler := handler.NewDashboardHandler(musicHandler, dashBuilder)
 	lyricsHandler := handler.NewLyricsHandler(lrclibClient)
-	statsHandler := handler.NewStatsHandler(historyRepo, userRepo)
+	statsHandler := handler.NewStatsHandler(historyRepo, musicHandler)
 
 	// Setup Chi Router
 	r := chi.NewRouter()
@@ -91,10 +118,25 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	// CORS configuration
-	allowedOrigins := strings.Split(cfg.AllowedOrigins, ",")
+	// CORS configuration: support both localhost and 127.0.0.1 across ports
+	allowedOrigins := []string{
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+		"http://localhost:8080",
+		"http://127.0.0.1:8080",
+	}
+	if cfg.AllowedOrigins != "" {
+		for _, o := range strings.Split(cfg.AllowedOrigins, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   allowedOrigins,
+		AllowedOrigins: allowedOrigins,
+		AllowOriginFunc: func(r *http.Request, origin string) bool {
+			return strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
@@ -111,9 +153,10 @@ func main() {
 
 	// API V1 Route Group
 	r.Route("/api/v1", func(api chi.Router) {
-		// Auth Routes
-		api.Get("/auth/login", authHandler.Login)
-		api.Get("/auth/callback", authHandler.Callback)
+		// Native Sonara Auth Routes
+		api.Post("/auth/signup", authHandler.Signup)
+		api.Post("/auth/login", authHandler.Login)
+		api.Post("/auth/guest", authHandler.Guest)
 		api.Post("/auth/logout", authHandler.Logout)
 		api.Get("/auth/session", authHandler.Session)
 
@@ -123,6 +166,18 @@ func main() {
 		api.Get("/me/top/tracks", musicHandler.GetTopTracks)
 		api.Get("/me/recently-played", musicHandler.GetRecentlyPlayed)
 		api.Get("/search", musicHandler.Search)
+		api.Get("/preview", musicHandler.GetPreview)
+		api.Get("/auth/token", musicHandler.GetPlayerToken)
+		api.Get("/me/playlists", musicHandler.GetMyPlaylists)
+		api.Get("/me/tracks", musicHandler.GetSavedTracks)
+		api.Put("/me/library", musicHandler.SaveTrack)
+		api.Delete("/me/library", musicHandler.RemoveTrack)
+		api.Get("/me/library/contains", musicHandler.TrackSaved)
+		api.Get("/playlists/{id}", musicHandler.GetPlaylist)
+		api.Get("/artists/{id}", musicHandler.GetArtist)
+		api.Get("/dashboard", dashboardHandler.GetDashboard)
+		api.Get("/me/preferences", dashboardHandler.GetPreferences)
+		api.Put("/me/preferences", dashboardHandler.PutPreferences)
 
 		// Playback Controls
 		api.Get("/me/player", musicHandler.GetPlaybackState)
@@ -137,6 +192,7 @@ func main() {
 		// Lyrics & Analytics
 		api.Get("/lyrics", lyricsHandler.GetLyrics)
 		api.Get("/stats", statsHandler.GetStats)
+		api.Post("/history", statsHandler.RecordPlay)
 	})
 
 	// Server Start & Graceful Shutdown

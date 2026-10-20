@@ -78,18 +78,34 @@ export interface PlayHistoryItem {
 
 export interface UserProfile {
   id: string;
-  spotify_id?: string;
   display_name: string;
   email: string;
   avatar_url?: string;
-  product: 'premium' | 'free' | 'open';
+  bio?: string;
+  product?: string; // 'premium' for Studio Master access
   country?: string;
 }
 
 export interface SessionResponse {
   authenticated: boolean;
-  user?: UserProfile;
-  is_premium: boolean;
+  user?: UserProfile | null;
+  is_premium?: boolean;
+}
+
+export interface AuthResponse {
+  authenticated: boolean;
+  user: UserProfile;
+}
+
+export interface LoginPayload {
+  email: string;
+  password?: string;
+}
+
+export interface SignupPayload {
+  email: string;
+  password?: string;
+  display_name: string;
 }
 
 export interface SearchResult {
@@ -124,6 +140,9 @@ export interface DailyListeningStat {
 }
 
 export interface StatsReport {
+  play_count: number;
+  unique_tracks: number;
+  unique_artists: number;
   total_minutes: number;
   streak_days: number;
   top_genres: GenreStat[];
@@ -134,4 +153,35 @@ export interface ErrorResponse {
   error: string;
   message: string;
   code?: number;
+}
+
+/** Server-driven dashboard (GET /dashboard) */
+export type SectionType = "hero" | "carousel" | "grid";
+export type SectionKind = "tracks" | "artists" | "albums";
+
+export interface DashboardSection {
+  id: string;
+  type: SectionType;
+  kind: SectionKind;
+  title: string;
+  subtitle?: string;
+  tracks?: Track[];
+  artists?: Artist[];
+  albums?: AlbumSummary[];
+}
+
+export interface DashboardResponse {
+  sections: DashboardSection[];
+  top_genres: string[];
+  needs_onboarding: boolean;
+  market: string;
+  generated_at: string;
+}
+
+export interface Preferences {
+  languages: string[];
+  genres: string[];
+  artists: ArtistSummary[];
+  country?: string;
+  onboarded: boolean;
 }

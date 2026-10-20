@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -17,15 +18,26 @@ import (
 )
 
 type SpotifyProvider struct {
-	clientID     string
-	clientSecret string
-	httpClient   *http.Client
+	clientID      string
+	clientSecret  string
+	defaultMarket string // ISO market used for logged-out (app token) catalog requests
+	baseURL       string // Spotify Web API base (overridable in tests)
+	httpClient    *http.Client
+
+	tokenMu     sync.RWMutex
+	cachedToken string
+	tokenExpiry time.Time
 }
 
-func NewSpotifyProvider(clientID, clientSecret string) *SpotifyProvider {
+func NewSpotifyProvider(clientID, clientSecret, defaultMarket string) *SpotifyProvider {
+	if defaultMarket == "" {
+		defaultMarket = "US"
+	}
 	return &SpotifyProvider{
-		clientID:     clientID,
-		clientSecret: clientSecret,
+		clientID:      strings.TrimSpace(clientID),
+		clientSecret:  strings.TrimSpace(clientSecret),
+		defaultMarket: strings.ToUpper(strings.TrimSpace(defaultMarket)),
+		baseURL:       "https://api.spotify.com/v1",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -36,7 +48,7 @@ func (s *SpotifyProvider) Name() string { return "spotify" }
 
 // doRequest performs an HTTP request to Spotify API with backoff retry on 429 and error classification
 func (s *SpotifyProvider) doRequest(ctx context.Context, method, endpoint, token string, body io.Reader) (*http.Response, error) {
-	apiURL := "https://api.spotify.com/v1" + endpoint
+	apiURL := s.baseURL + endpoint
 	maxRetries := 3
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -71,9 +83,11 @@ func (s *SpotifyProvider) doRequest(ctx context.Context, method, endpoint, token
 			}
 		}
 
-		if resp.StatusCode == http.StatusForbidden {
-			// 403 Forbidden: 2026 Developer mode restriction or Non-Premium user restriction
-			return resp, fmt.Errorf("spotify 403 forbidden: ensure user is in allowlist or has active Spotify Premium")
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+			// 401/403: expired token, Development Mode restriction, allowlist or Premium requirement
+			apiErr := errFromResponse(resp)
+			resp.Body.Close()
+			return nil, apiErr
 		}
 
 		return resp, nil
@@ -114,7 +128,6 @@ func (s *SpotifyProvider) GetProfile(ctx context.Context, accessToken string) (*
 	}
 
 	return &models.User{
-		SpotifyID:   data.ID,
 		DisplayName: data.DisplayName,
 		Email:       data.Email,
 		Product:     data.Product,
@@ -133,6 +146,9 @@ func (s *SpotifyProvider) GetTopArtists(ctx context.Context, accessToken string,
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
 
 	var data struct {
 		Items []struct {
@@ -143,7 +159,7 @@ func (s *SpotifyProvider) GetTopArtists(ctx context.Context, accessToken string,
 			Followers struct {
 				Total int `json:"total"`
 			} `json:"followers"`
-			Popularity int `json:"popularity"`
+			Popularity int            `json:"popularity"`
 			Images     []models.Image `json:"images"`
 		} `json:"items"`
 	}
@@ -178,14 +194,17 @@ func (s *SpotifyProvider) GetTopTracks(ctx context.Context, accessToken string, 
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
 
 	var data struct {
 		Items []struct {
-			ID         string `json:"id"`
-			Name       string `json:"name"`
-			URI        string `json:"uri"`
-			DurationMs int    `json:"duration_ms"`
-			Popularity int    `json:"popularity"`
+			ID         string                 `json:"id"`
+			Name       string                 `json:"name"`
+			URI        string                 `json:"uri"`
+			DurationMs int                    `json:"duration_ms"`
+			Popularity int                    `json:"popularity"`
 			Artists    []models.ArtistSummary `json:"artists"`
 			Album      models.AlbumSummary    `json:"album"`
 		} `json:"items"`
@@ -221,6 +240,9 @@ func (s *SpotifyProvider) GetRecentlyPlayed(ctx context.Context, accessToken str
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
 
 	var data struct {
 		Items []struct {
@@ -243,67 +265,22 @@ func (s *SpotifyProvider) GetRecentlyPlayed(ctx context.Context, accessToken str
 	return items, nil
 }
 
-func (s *SpotifyProvider) Search(ctx context.Context, accessToken string, query string, types string, limit int) (*models.SearchResult, error) {
-	// Spotify 2026 Developer restriction: search is capped at 10 results
-	if limit > 10 {
-		limit = 10
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-	if types == "" {
-		types = "track,artist,album,playlist"
-	}
-
-	// If no access token provided, try obtaining an app token via client_credentials
-	if accessToken == "" && s.clientID != "" && s.clientSecret != "" {
-		appToken, err := s.GetAppToken(ctx)
-		if err == nil && appToken != "" {
-			accessToken = appToken
-		}
-	}
-
-	if accessToken != "" {
-		endpoint := fmt.Sprintf("/search?q=%s&type=%s&limit=%d", url.QueryEscape(query), types, limit)
-		resp, err := s.doRequest(ctx, http.MethodGet, endpoint, accessToken, nil)
-		if err == nil && resp != nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				var data struct {
-					Tracks struct {
-						Items []models.Track `json:"items"`
-					} `json:"tracks"`
-					Artists struct {
-						Items []models.Artist `json:"items"`
-					} `json:"artists"`
-					Albums struct {
-						Items []models.AlbumSummary `json:"items"`
-					} `json:"albums"`
-					Playlists struct {
-						Items []models.PlaylistSummary `json:"items"`
-					} `json:"playlists"`
-				}
-
-				if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
-					if len(data.Tracks.Items) > 0 || len(data.Artists.Items) > 0 {
-						return &models.SearchResult{
-							Tracks:    data.Tracks.Items,
-							Artists:   data.Artists.Items,
-							Albums:    data.Albums.Items,
-							Playlists: data.Playlists.Items,
-						}, nil
-					}
-				}
-			}
-		}
-	}
-
-	// Seamless fallback to open music catalog search (iTunes Search API)
-	return s.searchOpenCatalog(ctx, query, limit)
-}
-
-// GetAppToken obtains a Spotify Client Credentials token for catalog search without requiring user login
+// GetAppToken obtains a Spotify Client Credentials token for catalog search with thread-safe in-memory caching
 func (s *SpotifyProvider) GetAppToken(ctx context.Context) (string, error) {
+	s.tokenMu.RLock()
+	if s.cachedToken != "" && time.Now().Before(s.tokenExpiry) {
+		token := s.cachedToken
+		s.tokenMu.RUnlock()
+		return token, nil
+	}
+	s.tokenMu.RUnlock()
+
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	if s.cachedToken != "" && time.Now().Before(s.tokenExpiry) {
+		return s.cachedToken, nil
+	}
+
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
 
@@ -321,100 +298,26 @@ func (s *SpotifyProvider) GetAppToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("spotify client_credentials token request returned %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("spotify client_credentials token request returned %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var res struct {
 		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return "", err
 	}
+
+	ttl := time.Duration(res.ExpiresIn-60) * time.Second
+	if ttl <= 0 {
+		ttl = 3000 * time.Second
+	}
+	s.cachedToken = res.AccessToken
+	s.tokenExpiry = time.Now().Add(ttl)
+
 	return res.AccessToken, nil
-}
-
-// searchOpenCatalog queries iTunes Search API as a zero-auth fallback providing real songs and previews
-func (s *SpotifyProvider) searchOpenCatalog(ctx context.Context, query string, limit int) (*models.SearchResult, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	apiURL := fmt.Sprintf("https://itunes.apple.com/search?term=%s&entity=song&limit=%d", url.QueryEscape(query), limit)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var data struct {
-		Results []struct {
-			TrackID        int64  `json:"trackId"`
-			TrackName      string `json:"trackName"`
-			ArtistName     string `json:"artistName"`
-			CollectionName string `json:"collectionName"`
-			ArtworkUrl100  string `json:"artworkUrl100"`
-			PreviewURL     string `json:"previewUrl"`
-			TrackTimeMillis int   `json:"trackTimeMillis"`
-			PrimaryGenre   string `json:"primaryGenreName"`
-		} `json:"results"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
-	}
-
-	tracks := make([]models.Track, 0, len(data.Results))
-	artistsMap := make(map[string]models.Artist)
-
-	for _, item := range data.Results {
-		highResArt := strings.Replace(item.ArtworkUrl100, "100x100bb.jpg", "600x600bb.jpg", 1)
-		preview := item.PreviewURL
-		t := models.Track{
-			ID:         fmt.Sprintf("itunes-%d", item.TrackID),
-			Name:       item.TrackName,
-			URI:        fmt.Sprintf("spotify:track:%d", item.TrackID),
-			PreviewURL: &preview,
-			DurationMs: item.TrackTimeMillis,
-			Popularity: 85,
-			Artists: []models.ArtistSummary{
-				{ID: fmt.Sprintf("artist-%s", url.QueryEscape(item.ArtistName)), Name: item.ArtistName},
-			},
-			Album: models.AlbumSummary{
-				ID:   fmt.Sprintf("album-%s", url.QueryEscape(item.CollectionName)),
-				Name: item.CollectionName,
-				Images: []models.Image{
-					{URL: highResArt, Width: intPtr(600), Height: intPtr(600)},
-				},
-			},
-		}
-		tracks = append(tracks, t)
-
-		if _, exists := artistsMap[item.ArtistName]; !exists && item.ArtistName != "" {
-			artistsMap[item.ArtistName] = models.Artist{
-				ID:        fmt.Sprintf("artist-%s", url.QueryEscape(item.ArtistName)),
-				Name:      item.ArtistName,
-				Genres:    []string{strings.ToLower(item.PrimaryGenre)},
-				Followers: 1250000,
-				Images: []models.Image{
-					{URL: highResArt, Width: intPtr(600), Height: intPtr(600)},
-				},
-			}
-		}
-	}
-
-	artists := make([]models.Artist, 0, len(artistsMap))
-	for _, a := range artistsMap {
-		artists = append(artists, a)
-	}
-
-	return &models.SearchResult{
-		Tracks:  tracks,
-		Artists: artists,
-	}, nil
 }
 
 func intPtr(i int) *int {
@@ -431,6 +334,9 @@ func (s *SpotifyProvider) GetPlaybackState(ctx context.Context, accessToken stri
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
 
 	var state models.PlaybackState
 	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
@@ -445,6 +351,9 @@ func (s *SpotifyProvider) GetDevices(ctx context.Context, accessToken string) ([
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errFromResponse(resp)
+	}
 
 	var data struct {
 		Devices []models.Device `json:"devices"`
@@ -466,6 +375,9 @@ func (s *SpotifyProvider) TransferPlayback(ctx context.Context, accessToken stri
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -484,6 +396,9 @@ func (s *SpotifyProvider) Play(ctx context.Context, accessToken string, deviceID
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -497,6 +412,9 @@ func (s *SpotifyProvider) Pause(ctx context.Context, accessToken string, deviceI
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -510,6 +428,9 @@ func (s *SpotifyProvider) Next(ctx context.Context, accessToken string, deviceID
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -523,6 +444,9 @@ func (s *SpotifyProvider) Previous(ctx context.Context, accessToken string, devi
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -533,6 +457,9 @@ func (s *SpotifyProvider) Seek(ctx context.Context, accessToken string, position
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }
 
@@ -543,5 +470,8 @@ func (s *SpotifyProvider) SetVolume(ctx context.Context, accessToken string, vol
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return errFromResponse(resp)
+	}
 	return nil
 }

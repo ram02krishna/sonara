@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "@/store/useAppStore";
 import { usePlayerStore } from "@/store/usePlayerStore";
-import { MOCK_TRACKS, MOCK_ARTISTS } from "@/data/mockCatalog";
+import { useSearch } from "@/hooks/useSonara";
 import { cn } from "@/lib/utils";
 
 export function CommandPalette() {
@@ -27,6 +27,13 @@ export function CommandPalette() {
   const { setCurrentTrack, setIsPlaying, isPlaying, playNext } = usePlayerStore();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+  // Same hook + endpoint as the header and /search page.
+  const { data: live } = useSearch(commandPaletteOpen ? debounced : "", "track");
 
   // Global keyboard shortcut Cmd+K or Ctrl+K
   useEffect(() => {
@@ -46,11 +53,7 @@ export function CommandPalette() {
   if (!commandPaletteOpen) return null;
 
   // Search filtered items
-  const matchedTracks = MOCK_TRACKS.filter(
-    (t) =>
-      t.name.toLowerCase().includes(query.toLowerCase()) ||
-      t.artists?.some((a) => a.name.toLowerCase().includes(query.toLowerCase()))
-  );
+  const matchedTracks = (live?.tracks ?? []).slice(0, 6);
 
   const actions = [
     {
@@ -130,9 +133,9 @@ export function CommandPalette() {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-start justify-center pt-20 px-4 animate-in fade-in duration-150">
-      <div className="glass-panel w-full max-w-xl rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[500px]">
+      <div className="glass-panel w-full max-w-xl rounded-3xl border border-foreground/10 shadow-2xl overflow-hidden flex flex-col max-h-[500px]">
         {/* Search Input */}
-        <div className="flex items-center px-4 py-3.5 border-b border-white/10 gap-3">
+        <div className="flex items-center px-4 py-3.5 border-b border-foreground/10 gap-3">
           <Search className="w-5 h-5 text-muted-foreground" />
           <input
             autoFocus
@@ -143,11 +146,11 @@ export function CommandPalette() {
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            className="flex-1 bg-transparent border-none outline-none text-white text-sm placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent border-none outline-none text-foreground text-sm placeholder:text-muted-foreground"
           />
           <button
             onClick={() => setCommandPaletteOpen(false)}
-            className="p-1 rounded-lg text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-foreground/10 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -165,7 +168,7 @@ export function CommandPalette() {
                 <div
                   key={track.id}
                   onClick={() => handleSelectTrack(track)}
-                  className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer transition-colors group"
+                  className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-foreground/10 cursor-pointer transition-colors group"
                 >
                   <div className="flex items-center gap-3">
                     <img
@@ -174,7 +177,7 @@ export function CommandPalette() {
                       className="w-8 h-8 rounded-lg object-cover"
                     />
                     <div>
-                      <p className="text-sm font-medium text-white group-hover:text-cyan-300">
+                      <p className="text-sm font-medium text-foreground group-hover:text-cyan-300">
                         {track.name}
                       </p>
                       <p className="text-xs text-muted-foreground">
@@ -200,13 +203,13 @@ export function CommandPalette() {
                   <div
                     key={act.id}
                     onClick={() => handleRunAction(act)}
-                    className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer transition-colors group"
+                    className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-foreground/10 cursor-pointer transition-colors group"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center text-muted-foreground group-hover:text-cyan-400 transition-colors">
+                      <div className="w-7 h-7 rounded-lg bg-foreground/5 flex items-center justify-center text-muted-foreground group-hover:text-cyan-400 transition-colors">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <span className="text-sm text-white/90 group-hover:text-white">
+                      <span className="text-sm text-foreground/90 group-hover:text-foreground">
                         {act.title}
                       </span>
                     </div>

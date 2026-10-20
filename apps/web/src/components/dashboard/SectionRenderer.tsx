@@ -1,0 +1,124 @@
+"use client";
+
+import React from "react";
+import Link from "next/link";
+import { Play, Pause, Sparkles, SlidersHorizontal } from "lucide-react";
+import { DashboardSection, Track } from "@/types/api";
+import { AlbumCard, ArtistCard, Cover, SectionHeader, TrackCard, TrackRow } from "@/components/ui/media";
+import { usePlayerStore } from "@/store/usePlayerStore";
+import { usePlayTrack } from "@/hooks/usePlayTrack";
+
+/** Renders one server-driven dashboard section by its type/kind. New sections need no frontend change. */
+export function SectionRenderer({ section }: { section: DashboardSection }) {
+  const tracks = section.tracks ?? [];
+  const artists = section.artists ?? [];
+  const albums = section.albums ?? [];
+
+  if (section.type === "grid") {
+    return (
+      <section>
+        <SectionHeader title={section.title} subtitle={section.subtitle} />
+        {section.kind === "albums" ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+            {albums.map((a) => (
+              <AlbumCard key={a.id} album={a} />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-1">
+            {tracks.map((t, i) => (
+              <TrackRow key={t.id} track={t} index={i} context={tracks} />
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <SectionHeader title={section.title} subtitle={section.subtitle} />
+      <div className="shelf">
+        {section.kind === "tracks" && tracks.map((t) => <TrackCard key={t.id} track={t} context={tracks} />)}
+        {section.kind === "artists" && artists.map((a) => <ArtistCard key={a.id} artist={a} />)}
+        {section.kind === "albums" && albums.map((a) => <AlbumCard key={a.id} album={a} />)}
+      </div>
+    </section>
+  );
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5) return "Still up";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  if (h < 22) return "Good evening";
+  return "Late night";
+}
+
+/** Hero banner: the user's top artist (or lead track) with a one-tap play for their own music. */
+export function Hero({
+  section,
+  name,
+  genres,
+  playable,
+}: {
+  section?: DashboardSection;
+  name?: string;
+  genres: string[];
+  playable: Track[];
+}) {
+  const play = usePlayTrack();
+  const { currentTrack, isPlaying } = usePlayerStore();
+  const artist = section?.artists?.[0];
+  const leadTrack = section?.tracks?.[0];
+  const image = artist?.images?.[0]?.url ?? leadTrack?.album?.images?.[0]?.url;
+  const title = artist?.name ?? leadTrack?.name;
+  const first = playable[0];
+  const playing = !!first && currentTrack?.id === first.id && isPlaying;
+
+  return (
+    <div className="relative rounded-[2rem] overflow-hidden border border-foreground/10 min-h-[260px] md:min-h-[300px] flex items-end">
+      {image && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={image} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover scale-110 blur-2xl opacity-60" />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
+      <div className="relative z-10 p-6 md:p-10 flex flex-col md:flex-row md:items-end gap-6 w-full">
+        {image && <Cover src={image} alt={title ?? ""} round={!!artist} className="w-32 h-32 md:w-44 md:h-44 shrink-0 shadow-2xl ring-1 ring-foreground/10" />}
+        <div className="flex-1 min-w-0 space-y-2">
+          <p className="text-sm font-medium text-muted-foreground">
+            {greeting()}
+            {name ? `, ${name.split(" ")[0]}` : ""}
+          </p>
+          {title ? (
+            <>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">{artist ? "Your top artist" : section?.title}</p>
+              <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-foreground truncate">{title}</h1>
+            </>
+          ) : (
+            <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-gradient">What are we listening to?</h1>
+          )}
+          {genres.length > 0 && (
+            <p className="text-sm text-muted-foreground capitalize truncate">Your sound: {genres.slice(0, 4).join(" · ")}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            {first && (
+              <button
+                onClick={() => play(first, playable)}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-sm shadow-lg shadow-violet-700/30 hover:scale-105 active:scale-95 transition-transform"
+              >
+                {playing ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+                {playing ? "Pause" : "Play your mix"}
+              </button>
+            )}
+            <Link href="/onboarding" className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl glass-pill text-sm font-medium text-foreground hover:bg-foreground/10">
+              <SlidersHorizontal className="w-4 h-4" /> Tune your taste
+            </Link>
+          </div>
+        </div>
+        <Sparkles className="hidden lg:block w-6 h-6 text-cyan-500 absolute right-8 top-8" />
+      </div>
+    </div>
+  );
+}

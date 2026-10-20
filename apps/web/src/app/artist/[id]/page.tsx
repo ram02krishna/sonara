@@ -2,129 +2,57 @@
 
 import React from "react";
 import { useParams } from "next/navigation";
-import {
-  Play,
-  Pause,
-  Clock,
-  Heart,
-  Share2,
-  Sparkles,
-  Award,
-  Disc3,
-  UserCheck,
-} from "lucide-react";
-import { usePlayerStore } from "@/store/usePlayerStore";
-import { useAppStore } from "@/store/useAppStore";
-import { MOCK_ARTISTS, MOCK_TRACKS } from "@/data/mockCatalog";
-import { cn, formatDuration, formatCompactNumber } from "@/lib/utils";
+import { Play } from "lucide-react";
+import { friendlyError, useArtist } from "@/hooks/useSonara";
+import { usePlayTrack } from "@/hooks/usePlayTrack";
+import { Cover, EmptyState, ErrorState, SectionHeader, TrackRow } from "@/components/ui/media";
 
-export default function ArtistDetailPage() {
-  const params = useParams();
-  const { currentTrack, isPlaying, setIsPlaying, setCurrentTrack } = usePlayerStore();
-  const { addToast } = useAppStore();
+export default function ArtistPage() {
+  const { id } = useParams<{ id: string }>();
+  const { data, isLoading, error, refetch } = useArtist(id);
+  const play = usePlayTrack();
 
-  const artistId = params?.id as string;
-  const artist = MOCK_ARTISTS.find((a) => a.id === artistId) || MOCK_ARTISTS[0];
+  if (error) {
+    const e = friendlyError(error);
+    return <div className="p-8"><ErrorState title={e.title} detail={e.detail} onRetry={() => refetch()} /></div>;
+  }
+  if (isLoading || !data) return <div className="p-8"><div className="h-64 rounded-[2rem] skeleton" /></div>;
 
-  const handlePlayTrack = (track: any) => {
-    if (currentTrack?.id === track.id) {
-      setIsPlaying(!isPlaying);
-    } else {
-      setCurrentTrack(track);
-    }
-  };
-
+  const { artist, tracks } = data;
   return (
-    <div className="p-6 md:p-8 space-y-8 max-w-7xl mx-auto">
-      {/* Hero Banner */}
-      <div className="relative rounded-3xl overflow-hidden aspect-[21/9] max-h-80 shadow-2xl border border-white/10 group">
-        <img
-          src={artist.images?.[0]?.url || ""}
-          alt={artist.name}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-end p-6 md:p-10">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md text-xs font-semibold text-cyan-300 border border-white/10 w-fit mb-2">
-            <UserCheck className="w-3.5 h-3.5" />
-            <span>Verified Artist</span>
+    <div className="p-4 md:p-8 space-y-8 max-w-5xl mx-auto">
+      <div className="relative rounded-[2rem] overflow-hidden border border-foreground/10 p-6 md:p-10 flex flex-col md:flex-row items-center md:items-end gap-6">
+        {artist.images?.[0]?.url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={artist.images[0].url} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover scale-110 blur-2xl opacity-50" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-background via-background/50 to-transparent" />
+        <Cover src={artist.images?.[0]?.url} alt={artist.name} round className="relative w-40 h-40 md:w-48 md:h-48 shrink-0 shadow-2xl" />
+        <div className="relative text-center md:text-left space-y-2 min-w-0">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Artist</p>
+          <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight text-foreground">{artist.name}</h1>
+          {artist.genres?.length > 0 && <p className="text-sm text-muted-foreground capitalize">{artist.genres.slice(0, 4).join(" · ")}</p>}
+          {tracks.length > 0 && (
+            <button
+              onClick={() => play(tracks[0], tracks)}
+              className="mt-2 inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-sm shadow-lg"
+            >
+              <Play className="w-4 h-4 fill-current" /> Play
+            </button>
+          )}
+        </div>
+      </div>
+
+      <section>
+        <SectionHeader title="Songs" subtitle="From Spotify's catalogue" />
+        {tracks.length ? (
+          <div className="space-y-0.5">
+            {tracks.map((t, i) => <TrackRow key={t.id} track={t} index={i} context={tracks} />)}
           </div>
-          <h1 className="text-4xl md:text-6xl font-black text-white tracking-tight">
-            {artist.name}
-          </h1>
-          <p className="text-sm text-cyan-300 font-medium mt-1">
-            {formatCompactNumber(artist.followers || 0)} Monthly Listeners
-          </p>
-        </div>
-      </div>
-
-      {/* Action Row */}
-      <div className="flex items-center gap-4">
-        <button
-          onClick={() => handlePlayTrack(MOCK_TRACKS[0])}
-          className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 text-white flex items-center justify-center shadow-xl shadow-cyan-600/20 hover:scale-105 active:scale-95 transition-all"
-        >
-          {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-0.5" />}
-        </button>
-
-        <button
-          onClick={() => addToast({ title: "Following " + artist.name, type: "success" })}
-          className="px-5 py-2.5 rounded-2xl border border-white/20 hover:bg-white/10 text-white text-xs font-bold transition-all"
-        >
-          Follow
-        </button>
-      </div>
-
-      {/* Popular Tracks Table */}
-      <div className="space-y-4">
-        <h2 className="text-xl font-bold text-white tracking-tight">Popular Releases</h2>
-
-        <div className="glass-card rounded-3xl border border-white/5 divide-y divide-white/5 overflow-hidden">
-          {MOCK_TRACKS.map((track, idx) => {
-            const isCurrent = currentTrack?.id === track.id;
-            return (
-              <div
-                key={track.id}
-                onClick={() => handlePlayTrack(track)}
-                className="flex items-center justify-between p-3.5 hover:bg-white/5 cursor-pointer transition-colors group"
-              >
-                <div className="w-8 text-center text-xs font-mono text-muted-foreground group-hover:text-cyan-400">
-                  {idx + 1}
-                </div>
-
-                <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                  <div className="relative w-11 h-11 rounded-xl overflow-hidden shrink-0 shadow">
-                    <img
-                      src={track.album?.images?.[0]?.url || ""}
-                      alt={track.name}
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      {isCurrent && isPlaying ? (
-                        <Pause className="w-4 h-4 text-cyan-300 fill-current" />
-                      ) : (
-                        <Play className="w-4 h-4 text-white fill-current ml-0.5" />
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <p className={cn("text-sm font-semibold truncate", isCurrent ? "text-cyan-300" : "text-white")}>
-                      {track.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {track.album?.name}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="w-16 text-right text-xs font-mono text-muted-foreground">
-                  {formatDuration(track.duration_ms)}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+        ) : (
+          <EmptyState title="No songs found" />
+        )}
+      </section>
     </div>
   );
 }

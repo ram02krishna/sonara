@@ -4,42 +4,62 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/google/uuid"
+	"github.com/sonara/api/internal/models"
 	"github.com/sonara/api/internal/repository"
 )
 
 type StatsHandler struct {
 	historyRepo *repository.HistoryRepository
-	userRepo    *repository.UserRepository
+	music       *MusicHandler
 }
 
-func NewStatsHandler(historyRepo *repository.HistoryRepository, userRepo *repository.UserRepository) *StatsHandler {
-	return &StatsHandler{
-		historyRepo: historyRepo,
-		userRepo:    userRepo,
-	}
+func NewStatsHandler(historyRepo *repository.HistoryRepository, music *MusicHandler) *StatsHandler {
+	return &StatsHandler{historyRepo: historyRepo, music: music}
 }
 
 func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
-	timeRange := r.URL.Query().Get("range")
-	if timeRange == "" {
-		timeRange = "4weeks"
-	}
-
-	userID := uuid.Nil
-	cookie, err := r.Cookie("sonara_session")
-	if err == nil && cookie.Value != "" {
-		if u, err := h.userRepo.GetUserBySession(r.Context(), cookie.Value); err == nil && u != nil {
-			userID = u.ID
-		}
-	}
-
-	report, err := h.historyRepo.GetStats(r.Context(), userID, timeRange)
-	if err != nil {
-		http.Error(w, "Failed to retrieve stats", http.StatusInternalServerError)
+	_, user, ok := h.music.requireUser(w, r)
+	if !ok {
 		return
 	}
+	timeRange := r.URL.Query().Get("range")
+	switch timeRange {
+	case "4weeks", "6months", "alltime":
+	default:
+		timeRange = "4weeks"
+	}
+	report, err := h.historyRepo.GetStats(r.Context(), user.ID, timeRange)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stats_unavailable", "Could not load your listening stats.")
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(report)
+// RecordPlay is called by the web player once a track has genuinely been played for a while.
+func (h *StatsHandler) RecordPlay(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := h.music.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Track      models.Track `json:"track"`
+		ListenedMs int          `json:"listened_ms"`
+		Source     string       `json:"source"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil || in.Track.ID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "A track is required.")
+		return
+	}
+	if in.ListenedMs < 0 || in.ListenedMs > 24*3600*1000 {
+		in.ListenedMs = 0
+	}
+	if in.Source != "spotify" && in.Source != "preview" {
+		in.Source = "spotify"
+	}
+	if err := h.historyRepo.RecordPlay(r.Context(), user.ID, &in.Track, in.ListenedMs, in.Source); err != nil {
+		writeError(w, http.StatusInternalServerError, "record_failed", "Could not record this play.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

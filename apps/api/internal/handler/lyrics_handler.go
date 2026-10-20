@@ -1,11 +1,9 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
-	"github.com/sonara/api/internal/models"
 	"github.com/sonara/api/internal/provider"
 )
 
@@ -29,22 +27,10 @@ func (h *LyricsHandler) GetLyrics(w http.ResponseWriter, r *http.Request) {
 
 	lyrics, err := h.lyricsClient.GetLyrics(r.Context(), trackName, artistName, durationMs)
 	if err != nil || lyrics == nil {
-		// Provide high fidelity fallback lines
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.Lyrics{
-			TrackName:  trackName,
-			ArtistName: artistName,
-			Synced:     true,
-			Lines: []models.LyricsLine{
-				{TimeSeconds: 5, Words: "Listening to " + trackName},
-				{TimeSeconds: 12, Words: "Lossless high fidelity audio streaming"},
-				{TimeSeconds: 22, Words: "Sonara acoustics sound engine active"},
-				{TimeSeconds: 32, Words: "Feel the frequency resonance in every note"},
-			},
-		})
+		// No fabricated lyrics: tell the UI honestly so it can show "No lyrics found".
+		writeError(w, http.StatusNotFound, "lyrics_not_found", "No lyrics found for this track.")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(lyrics)
+	writeJSON(w, http.StatusOK, lyrics)
 }

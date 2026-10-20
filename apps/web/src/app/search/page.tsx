@@ -1,328 +1,126 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import {
-  Search as SearchIcon,
-  Play,
-  Pause,
-  Music,
-  User,
-  Disc,
-  ListMusic,
-  Heart,
-  X,
-  Loader2,
-} from "lucide-react";
-import { usePlayerStore } from "@/store/usePlayerStore";
-import { useAppStore } from "@/store/useAppStore";
-import { MOCK_TRACKS, MOCK_ARTISTS, MOCK_PLAYLISTS } from "@/data/mockCatalog";
-import { cn, formatDuration, formatCompactNumber } from "@/lib/utils";
-import { apiFetch } from "@/lib/api-client";
-import { Track, Artist, AlbumSummary, PlaylistSummary, SearchResult } from "@/types/api";
+import React, { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { Search as SearchIcon, Loader2 } from "lucide-react";
+import { friendlyError, useSearch } from "@/hooks/useSonara";
+import { AlbumCard, ArtistCard, Cover, EmptyState, ErrorState, SectionHeader, TrackRow } from "@/components/ui/media";
+import { cn } from "@/lib/utils";
 
-type SearchFilter = "all" | "tracks" | "artists" | "albums" | "playlists";
+type Filter = "all" | "track" | "artist" | "album" | "playlist";
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "track", label: "Songs" },
+  { id: "artist", label: "Artists" },
+  { id: "album", label: "Albums" },
+  { id: "playlist", label: "Playlists" },
+];
 
-export default function SearchPage() {
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<SearchFilter>("all");
-  const [isLoading, setIsLoading] = useState(false);
-  const [results, setResults] = useState<SearchResult | null>(null);
+function SearchInner() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const urlQuery = params.get("q") ?? "";
+  const [input, setInput] = useState(urlQuery);
+  const [filter, setFilter] = useState<Filter>("all");
 
-  const { currentTrack, isPlaying, setIsPlaying, setCurrentTrack } = usePlayerStore();
-  const { addToast } = useAppStore();
-
-  // Debounce query by 300ms
+  // The URL (?q=) is the single source of truth, shared with the header search box.
+  useEffect(() => setInput(urlQuery), [urlQuery]);
   useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedQuery(query.trim());
-    }, 300);
-    return () => clearTimeout(handler);
-  }, [query]);
+    const t = setTimeout(() => {
+      if (input.trim() !== urlQuery.trim()) router.replace(input.trim() ? `/search?q=${encodeURIComponent(input.trim())}` : "/search");
+    }, 350);
+    return () => clearTimeout(t);
+  }, [input, urlQuery, router]);
 
-  // Fetch results whenever debouncedQuery changes
-  useEffect(() => {
-    if (!debouncedQuery) {
-      setResults(null);
-      setIsLoading(false);
-      return;
-    }
-
-    let isMounted = true;
-    setIsLoading(true);
-
-    fetch(`/api/search?q=${encodeURIComponent(debouncedQuery)}&limit=15`)
-      .then((res) => {
-        if (!res.ok) throw new Error("Search failed");
-        return res.json();
-      })
-      .then((data) => {
-        if (isMounted) {
-          setResults(data);
-          setIsLoading(false);
-        }
-      })
-      .catch((err) => {
-        console.warn("Live search API error, falling back to local filter:", err);
-        if (isMounted) {
-          // Fallback to local filter if backend isn't reachable
-          const localTracks = MOCK_TRACKS.filter(
-            (t) =>
-              t.name.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
-              t.artists?.some((a) => a.name.toLowerCase().includes(debouncedQuery.toLowerCase()))
-          );
-          const localArtists = MOCK_ARTISTS.filter(
-            (a) =>
-              a.name.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
-              a.genres?.some((g) => g.toLowerCase().includes(debouncedQuery.toLowerCase()))
-          );
-          const localPlaylists = MOCK_PLAYLISTS.filter(
-            (p) =>
-              p.name.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
-              p.description?.toLowerCase().includes(debouncedQuery.toLowerCase())
-          );
-          setResults({
-            tracks: localTracks,
-            artists: localArtists,
-            playlists: localPlaylists,
-          });
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [debouncedQuery, activeFilter]);
-
-  const handlePlayTrack = (track: Track) => {
-    if (currentTrack?.id === track.id) {
-      setIsPlaying(!isPlaying);
-    } else {
-      setCurrentTrack(track);
-    }
-  };
-
-  // Tracks, artists, and playlists to display
-  const tracksToDisplay: Track[] = results
-    ? results.tracks || []
-    : MOCK_TRACKS;
-
-  const artistsToDisplay: Artist[] = results
-    ? results.artists || []
-    : MOCK_ARTISTS;
-
-  const playlistsToDisplay: PlaylistSummary[] = results
-    ? results.playlists || []
-    : MOCK_PLAYLISTS;
-
-  const filterTabs: { id: SearchFilter; label: string; icon: any }[] = [
-    { id: "all", label: "All Results", icon: SearchIcon },
-    { id: "tracks", label: "Songs", icon: Music },
-    { id: "artists", label: "Artists", icon: User },
-    { id: "playlists", label: "Playlists", icon: ListMusic },
-  ];
+  const { data, isFetching, error, refetch } = useSearch(urlQuery, filter === "all" ? undefined : filter);
+  const errInfo = error ? friendlyError(error) : null;
+  const tracks = data?.tracks ?? [];
+  const artists = data?.artists ?? [];
+  const albums = data?.albums ?? [];
+  const playlists = data?.playlists ?? [];
+  const nothing = !!urlQuery && !isFetching && !error && !tracks.length && !artists.length && !albums.length && !playlists.length;
+  const show = (f: Filter) => filter === "all" || filter === f;
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
-      {/* Search Header Input */}
-      <div className="space-y-4">
-        <h1 className="text-3xl font-extrabold text-white tracking-tight">Search Catalog</h1>
-        <div className="relative max-w-2xl">
-          <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-          <input
-            autoFocus
-            type="text"
-            placeholder="Search any song, artist, album, or playlist..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-full pl-12 pr-12 py-3.5 rounded-2xl glass-panel border border-white/10 text-white placeholder:text-muted-foreground focus:border-cyan-400 focus:outline-none transition-all text-sm md:text-base shadow-lg"
-          />
-          <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
-            {isLoading && <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />}
-            {query && (
-              <button
-                onClick={() => setQuery("")}
-                className="p-1 rounded-lg text-muted-foreground hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Filter Pills */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {filterTabs.map((tab) => {
-            const Icon = tab.icon;
-            const active = activeFilter === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveFilter(tab.id)}
-                className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all shrink-0",
-                  active
-                    ? "bg-white text-black shadow-md shadow-white/10 font-bold"
-                    : "glass-pill text-muted-foreground hover:text-white hover:bg-white/10"
-                )}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
+    <div className="p-4 md:p-8 space-y-8 max-w-6xl mx-auto">
+      <div className="relative max-w-2xl">
+        <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+        <input
+          autoFocus
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Songs, artists, albums, playlists, in any language"
+          className="w-full pl-12 pr-12 py-4 rounded-2xl glass-pill text-base text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50"
+        />
+        {isFetching && <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 animate-spin text-muted-foreground" />}
       </div>
 
-      {/* Results Content */}
-      <div className="space-y-8">
-        {/* Loading state indicator */}
-        {isLoading && (
-          <div className="flex items-center gap-2 text-xs text-cyan-400 py-2">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Searching 100M+ songs on Sonara catalog...</span>
-          </div>
-        )}
-
-        {/* Songs Section */}
-        {(activeFilter === "all" || activeFilter === "tracks") && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-white tracking-tight">
-                {debouncedQuery ? `Songs (${tracksToDisplay.length})` : "Trending Songs"}
-              </h2>
-            </div>
-
-            {tracksToDisplay.length === 0 && !isLoading ? (
-              <div className="glass-card rounded-2xl p-8 text-center text-xs text-muted-foreground">
-                No songs found for &ldquo;{debouncedQuery}&rdquo;. Try another title or artist name.
-              </div>
-            ) : (
-              <div className="glass-card rounded-3xl border border-white/5 divide-y divide-white/5 overflow-hidden">
-                {tracksToDisplay.map((track, idx) => {
-                  const isCurrent = currentTrack?.id === track.id;
-                  return (
-                    <div
-                      key={track.id || idx}
-                      onClick={() => handlePlayTrack(track)}
-                      className="flex items-center justify-between p-3.5 hover:bg-white/5 cursor-pointer transition-colors group"
-                    >
-                      <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                        <span className="w-5 text-center text-xs font-mono text-muted-foreground group-hover:text-cyan-400">
-                          {idx + 1}
-                        </span>
-                        <div className="relative w-11 h-11 rounded-xl overflow-hidden shrink-0 shadow bg-white/5">
-                          <img
-                            src={track.album?.images?.[0]?.url || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=100"}
-                            alt={track.name}
-                            className="w-full h-full object-cover"
-                          />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                            {isCurrent && isPlaying ? (
-                              <Pause className="w-4 h-4 text-cyan-300 fill-current" />
-                            ) : (
-                              <Play className="w-4 h-4 text-white fill-current ml-0.5" />
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <p className={cn("text-sm font-semibold truncate", isCurrent ? "text-cyan-300" : "text-white")}>
-                            {track.name}
-                          </p>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {track.artists?.map((a) => a.name).join(", ")}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="hidden md:block text-xs text-muted-foreground truncate max-w-[200px] px-4">
-                        {track.album?.name}
-                      </div>
-
-                      <div className="flex items-center gap-4">
-                        <span className="text-xs font-mono text-muted-foreground">
-                          {formatDuration(track.duration_ms)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+      <div className="flex flex-wrap gap-2">
+        {FILTERS.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setFilter(f.id)}
+            className={cn(
+              "px-4 py-1.5 rounded-full text-sm font-medium transition-colors",
+              filter === f.id ? "bg-foreground text-background" : "glass-pill text-foreground hover:bg-foreground/10"
             )}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {!urlQuery && <EmptyState title="Search Spotify's catalogue" detail="Find any song, artist or album, in any language." />}
+      {errInfo && <ErrorState title={errInfo.title} detail={errInfo.detail} onRetry={() => refetch()} />}
+      {nothing && <EmptyState title={`No results for “${urlQuery}”`} detail="Check the spelling or try another search." />}
+
+      {show("track") && tracks.length > 0 && (
+        <section>
+          <SectionHeader title="Songs" />
+          <div className="space-y-0.5">
+            {tracks.map((t, i) => (
+              <TrackRow key={t.id} track={t} index={i} context={tracks} />
+            ))}
           </div>
-        )}
-
-        {/* Artists Section */}
-        {(activeFilter === "all" || activeFilter === "artists") && (
-          <div className="space-y-3">
-            <h2 className="text-xl font-bold text-white tracking-tight">
-              {debouncedQuery ? `Artists (${artistsToDisplay.length})` : "Featured Artists"}
-            </h2>
-
-            {artistsToDisplay.length === 0 && !isLoading ? (
-              <div className="glass-card rounded-2xl p-6 text-center text-xs text-muted-foreground">
-                No matching artists found.
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                {artistsToDisplay.map((artist) => (
-                  <div
-                    key={artist.id}
-                    className="glass-card rounded-3xl p-4 border border-white/5 flex flex-col items-center text-center group hover:border-white/15 transition-all cursor-pointer"
-                  >
-                    <div className="w-24 h-24 rounded-full overflow-hidden mb-3 border-2 border-white/10 group-hover:border-cyan-400 shadow-lg transition-colors bg-white/5">
-                      <img
-                        src={artist.images?.[0]?.url || "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=300"}
-                        alt={artist.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                      />
-                    </div>
-                    <h3 className="font-bold text-white text-sm truncate w-full group-hover:text-cyan-300">
-                      {artist.name}
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5 truncate w-full capitalize">
-                      {artist.genres?.[0] || `${formatCompactNumber(artist.followers || 0)} followers`}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Playlists Section */}
-        {(activeFilter === "all" || activeFilter === "playlists") && (
-          <div className="space-y-3">
-            <h2 className="text-xl font-bold text-white tracking-tight">Playlists</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-              {playlistsToDisplay.map((pl) => (
-                <div
-                  key={pl.id}
-                  className="glass-card rounded-3xl p-4 border border-white/5 hover:border-white/15 transition-all group cursor-pointer flex flex-col justify-between"
-                >
-                  <div className="relative rounded-2xl overflow-hidden aspect-square mb-3 shadow-md bg-white/5">
-                    <img
-                      src={pl.images?.[0]?.url || ""}
-                      alt={pl.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-white text-base truncate group-hover:text-cyan-300">
-                      {pl.name}
-                    </h3>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
-                      {pl.description}
-                    </p>
-                  </div>
+        </section>
+      )}
+      {show("artist") && artists.length > 0 && (
+        <section>
+          <SectionHeader title="Artists" />
+          <div className="shelf">{artists.map((a) => <ArtistCard key={a.id} artist={a} />)}</div>
+        </section>
+      )}
+      {show("album") && albums.length > 0 && (
+        <section>
+          <SectionHeader title="Albums" />
+          <div className="shelf">{albums.map((a) => <AlbumCard key={a.id} album={a} />)}</div>
+        </section>
+      )}
+      {show("playlist") && playlists.length > 0 && (
+        <section>
+          <SectionHeader title="Playlists" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {playlists.map((p) => (
+              <Link key={p.id} href={`/playlist/${p.id}`} className="flex items-center gap-3 p-3 rounded-2xl glass-card">
+                <Cover src={p.images?.[0]?.url} alt={p.name} className="w-14 h-14 shrink-0 rounded-xl" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{p.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{p.owner_name ? `By ${p.owner_name}` : "Playlist"}</p>
                 </div>
-              ))}
-            </div>
+              </Link>
+            ))}
           </div>
-        )}
-      </div>
+        </section>
+      )}
     </div>
+  );
+}
+
+export default function SearchPage() {
+  return (
+    <Suspense fallback={null}>
+      <SearchInner />
+    </Suspense>
   );
 }

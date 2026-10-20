@@ -24,6 +24,7 @@ interface AppState {
 
   setTheme: (theme: ThemeMode) => void;
   toggleTheme: () => void;
+  syncThemeFromDom: () => void;
   setMood: (mood: MoodMode) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
@@ -48,6 +49,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTheme: (theme) => {
     set({ theme });
     if (typeof document !== "undefined") {
+      try {
+        localStorage.setItem("sonara-theme", theme);
+      } catch {
+        // storage unavailable (private mode): theme still applies for this session
+      }
       document.documentElement.setAttribute("data-theme", theme);
       if (theme === "dark") {
         document.documentElement.classList.add("dark");
@@ -55,6 +61,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         document.documentElement.classList.remove("dark");
       }
     }
+  },
+
+  // The inline script in layout.tsx already applied the saved/system theme; mirror it into state.
+  syncThemeFromDom: () => {
+    if (typeof document === "undefined") return;
+    const t = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    set({ theme: t });
   },
 
   toggleTheme: () => {

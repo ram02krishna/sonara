@@ -73,13 +73,31 @@ graph TD
 
 ---
 
-## 🔒 Spotify 2026 API Restrictions & Resilience
+## 🎯 Personalised, API-driven dashboard
 
-Spotify updated its developer platform rules in 2026:
-- Development mode requires a Premium account owner and an explicit user allowlist.
-- Catalog searches are capped at 10 items.
-- Deprecated legacy endpoints (e.g. recommendations and audio-features) are replaced by structured query filters and custom heuristics.
-- **Graceful Error Handling**: Typed 403 and 429 status code handling with exponential backoff retries, cache-first Redis fallback, and offline/demo fallback catalog.
+Nothing on the home screen is hardcoded. `GET /api/v1/dashboard` builds a list of sections per user from **Spotify**:
+
+- **Your listening**: recently played, top artists and top tracks.
+- **Your taste, in any language**: genres are ranked from your top artists (Spotify tags `bollywood`, `punjabi pop`, `k-pop`, `latin pop`, …) and turned into "Because you listen to …" shelves, plus a blended "Made around your taste" shelf.
+- **What you told us**: new accounts (or accounts without history) pick languages, genres, artists and a region on `/onboarding`; these are stored per user in Postgres and used alongside real listening data.
+- **New releases**: Spotify removed `/browse/new-releases` for Development Mode apps, so this uses the `tag:new` search filter.
+
+Each section is cached (Redis, in-memory fallback) and independent: if Spotify refuses one (403/404/429) that section is simply omitted. The frontend renders sections by `type`/`kind`, so adding a section in `apps/api/internal/dashboard` needs no UI change.
+
+## 🔒 Spotify 2026 API restrictions (Development Mode)
+
+Verified against Spotify's *February 2026 Dev Mode migration guide*:
+
+- App owner needs Premium; max **5** authorised users until you get Extended Quota.
+- Search `limit` is capped at **10**.
+- Removed: `/browse/new-releases`, `/browse/categories`, `/artists/{id}/top-tracks`, batch `GET /tracks|artists|albums`, recommendations, audio features.
+- `GET /me` no longer returns `country`, `product` or `email` (the user's region is chosen in onboarding; Premium is detected by the Web Playback SDK).
+- Artist/track `popularity` and artist `followers` are gone; playlist contents are only returned for playlists you own/collaborate on.
+- **Full songs** play only for Premium users through the Web Playback SDK; everyone else gets real 30s previews (resolved by track name via iTunes, since Spotify no longer returns `preview_url`).
+
+Upstream failures are typed (`401/403/404/429`) and surfaced to the UI instead of silently falling back to fake data.
+
+> **Run the app at `http://127.0.0.1:3000`** (not `localhost`). Spotify requires the `127.0.0.1` loopback redirect, and the session cookie is only shared when the app and API use the same host.
 
 ---
 
@@ -143,8 +161,8 @@ sonara/
    make docker-up
    ```
 3. Open your browser:
-   - Web App: [http://localhost:3000](http://localhost:3000)
-   - API Healthcheck: [http://localhost:8080/healthz](http://localhost:8080/healthz)
+   - Web App: [http://127.0.0.1:3000](http://127.0.0.1:3000)
+   - API Healthcheck: [http://127.0.0.1:8080/healthz](http://127.0.0.1:8080/healthz)
 
 ---
 

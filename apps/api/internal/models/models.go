@@ -7,18 +7,16 @@ import (
 )
 
 type User struct {
-	ID                   uuid.UUID `json:"id"`
-	SpotifyID            string    `json:"spotify_id"`
-	DisplayName          string    `json:"display_name"`
-	Email                string    `json:"email"`
-	AvatarURL            string    `json:"avatar_url"`
-	Product              string    `json:"product"` // "premium" or "free"
-	Country              string    `json:"country"`
-	EncryptedAccessToken []byte    `json:"-"`
-	EncryptedRefreshToken []byte   `json:"-"`
-	TokenExpiresAt       time.Time `json:"-"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	DisplayName  string    `json:"display_name"`
+	AvatarURL    string    `json:"avatar_url"`
+	Bio          string    `json:"bio,omitempty"`
+	Product      string    `json:"product"` // "premium" for full Sonara studio access
+	Country      string    `json:"country"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type Session struct {
@@ -41,24 +39,24 @@ type ArtistSummary struct {
 }
 
 type AlbumSummary struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	URI         string   `json:"uri,omitempty"`
-	ReleaseDate string   `json:"release_date,omitempty"`
-	Images      []Image  `json:"images"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	URI         string  `json:"uri,omitempty"`
+	ReleaseDate string  `json:"release_date,omitempty"`
+	Images      []Image `json:"images"`
 }
 
 type Track struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	URI         string          `json:"uri"`
-	PreviewURL  *string         `json:"preview_url,omitempty"`
-	DurationMs  int             `json:"duration_ms"`
-	Explicit    bool            `json:"explicit"`
-	Popularity  int             `json:"popularity"`
-	Artists     []ArtistSummary `json:"artists"`
-	Album       AlbumSummary    `json:"album"`
-	IsLiked     bool            `json:"is_liked,omitempty"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	URI        string          `json:"uri"`
+	PreviewURL *string         `json:"preview_url,omitempty"`
+	DurationMs int             `json:"duration_ms"`
+	Explicit   bool            `json:"explicit"`
+	Popularity int             `json:"popularity"`
+	Artists    []ArtistSummary `json:"artists"`
+	Album      AlbumSummary    `json:"album"`
+	IsLiked    bool            `json:"is_liked,omitempty"`
 }
 
 type Artist struct {
@@ -134,8 +132,44 @@ type DailyListeningStat struct {
 }
 
 type StatsReport struct {
+	PlayCount      int                  `json:"play_count"`
+	UniqueTracks   int                  `json:"unique_tracks"`
+	UniqueArtists  int                  `json:"unique_artists"`
 	TotalMinutes   int                  `json:"total_minutes"`
 	StreakDays     int                  `json:"streak_days"`
 	TopGenres      []GenreStat          `json:"top_genres"`
 	DailyListening []DailyListeningStat `json:"daily_listening"`
+}
+
+// Preferences holds a user's explicit taste choices (first-login picker).
+// They seed the dashboard for new users and are blended with real listening
+// data for everyone else, so each account sees its own languages and genres.
+type Preferences struct {
+	Languages []string        `json:"languages"`
+	Genres    []string        `json:"genres"`
+	Artists   []ArtistSummary `json:"artists"`
+	Country   string          `json:"country,omitempty"` // ISO-3166 alpha-2; empty = use Spotify "from_token"
+	Onboarded bool            `json:"onboarded"`
+}
+
+// DashboardSection is one server-driven block of the home screen.
+// Type controls layout ("hero" | "carousel" | "grid"); Kind says which of
+// Tracks/Artists/Albums is populated.
+type DashboardSection struct {
+	ID       string         `json:"id"`
+	Type     string         `json:"type"`
+	Kind     string         `json:"kind"`
+	Title    string         `json:"title"`
+	Subtitle string         `json:"subtitle,omitempty"`
+	Tracks   []Track        `json:"tracks,omitempty"`
+	Artists  []Artist       `json:"artists,omitempty"`
+	Albums   []AlbumSummary `json:"albums,omitempty"`
+}
+
+type DashboardResponse struct {
+	Sections        []DashboardSection `json:"sections"`
+	TopGenres       []string           `json:"top_genres"`
+	NeedsOnboarding bool               `json:"needs_onboarding"`
+	Market          string             `json:"market"`
+	GeneratedAt     time.Time          `json:"generated_at"`
 }
