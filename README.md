@@ -41,22 +41,119 @@ Browser ── same-origin /api/v1 ──► Next.js (App Router, TypeScript) �
 
 Spotify Development Mode limits (verified against Spotify's Feb 2026 migration guide) shape the catalogue code: search returns at most 10 results (Sonara paginates with `offset`), `/browse/new-releases` and `/artists/{id}/top-tracks` are gone (replaced by `tag:new` and search), and `popularity`/`followers` are no longer returned. Failures are typed and shown honestly; the dashboard drops a section that Spotify refuses instead of breaking the page.
 
-## Run it
+## Getting Started
 
+### 1. Environment Configuration
+
+Copy the template environment file and add your credentials:
+
+- **Linux / macOS / Git Bash:**
+  ```bash
+  cp .env.example .env
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  Copy-Item .env.example .env
+  ```
+
+*(Optional)* Open `.env` and fill in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` (from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)) for catalogue metadata. If left blank, the API falls back to iTunes catalogue search.
+
+---
+
+### Running With Docker
+
+Run the entire Sonara stack (Next.js web frontend, Go backend API, PostgreSQL, and Redis) containerized via Docker Compose.
+
+#### 1. Start all services
 ```bash
-cp .env.example .env        # add SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET
-make docker-up              # web, api, postgres, redis
+docker compose -f infra/docker-compose.yml up --build -d
 ```
-Open **http://127.0.0.1:3000** and continue as guest or create an account.
+*Or using Make:*
+```bash
+make docker-up
+```
 
-Local development:
+#### 2. View logs
+```bash
+docker compose -f infra/docker-compose.yml logs -f
+```
+*Or using Make:*
+```bash
+make docker-logs
+```
+
+#### 3. Stop all services
+```bash
+docker compose -f infra/docker-compose.yml down
+```
+*Or using Make:*
+```bash
+make docker-down
+```
+
+Once started, open **http://127.0.0.1:3000** in your browser and continue as guest or create an account.
+
+---
+
+### Running Without Docker
+
+To run the application natively on your host machine without Docker:
+
+#### Prerequisites
+- **Node.js**: v18+ and `npm`
+- **Go**: v1.22+
+- *(Optional)* **PostgreSQL** (v15+) & **Redis** (v7+) running locally on default ports (`5432` and `6379`).
+  > **Note:** If PostgreSQL and Redis are not running, the Go backend will automatically fall back to an in-memory store for development.
+
+#### Step 1: Install frontend dependencies
+From the repository root:
 ```bash
 npm install
-docker compose -f infra/docker-compose.yml up -d postgres redis
-make dev-api                # Go API on :8080
-make dev-web                # Next.js on :3000 (proxies /api/v1 to :8080)
 ```
-PostgreSQL is required for accounts, playlists, library and history (tables are created automatically on start).
+
+#### Step 2: Start the Go API server
+In terminal 1:
+```bash
+npm run dev:api
+```
+*Alternative commands:*
+```bash
+cd apps/api && go run ./cmd/server
+# or if you have make:
+make dev-api
+```
+The API server will listen on `http://127.0.0.1:8080`. Database tables are automatically ensured on startup.
+
+#### Step 3: Start the Next.js frontend
+In terminal 2:
+```bash
+npm run dev
+```
+*Alternative commands:*
+```bash
+npm run dev --workspace=apps/web
+# or if you have make:
+make dev-web
+```
+The frontend dev server will start at **http://127.0.0.1:3000** and automatically proxies `/api/v1` calls to the Go backend on port 8080.
+
+---
+
+### Hybrid Development Mode (Recommended for Local Dev)
+
+If you have Docker installed and want code hot-reloading without installing Postgres and Redis directly on your operating system:
+
+```bash
+# 1. Start Postgres and Redis in Docker
+docker compose -f infra/docker-compose.yml up -d postgres redis
+# or: make dev
+
+# 2. Run backend API in terminal 1
+npm run dev:api
+
+# 3. Run frontend web in terminal 2
+npm run dev
+```
 
 ## Tests
 
