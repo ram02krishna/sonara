@@ -21,31 +21,25 @@ func NewDashboardHandler(music *MusicHandler, builder *dashboard.Builder) *Dashb
 }
 
 func (h *DashboardHandler) GetDashboard(w http.ResponseWriter, r *http.Request) {
-	token, user, err := h.music.resolveToken(r)
-	if err != nil || token == "" {
-		writeError(w, http.StatusUnauthorized, "unauthenticated", "Please sign in to Sonara.")
+	user, ok := h.music.requireUser(w, r)
+	if !ok {
 		return
 	}
-	var prefs models.Preferences
-	userID := "guest"
-	if user != nil {
-		userID = user.ID.String()
-		prefs, _ = h.music.prefsRepo.Get(r.Context(), user.ID)
+	prefs, _ := h.music.prefsRepo.Get(r.Context(), user.ID)
+	if prefs.Country == "" {
+		prefs.Country = user.Country
 	}
 	resp := h.builder.Build(r.Context(), dashboard.Input{
-		UserID: userID,
-		Token:  token,
-		Market: "from_token",
-		Prefs:  prefs,
+		UserUUID: user.ID,
+		UserID:   user.ID.String(),
+		Market:   prefs.Country,
+		Prefs:    prefs,
 	})
-	if user == nil {
-		resp.NeedsOnboarding = false
-	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *DashboardHandler) GetPreferences(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.music.requireUser(w, r)
+	user, ok := h.music.requireUser(w, r)
 	if !ok {
 		return
 	}
@@ -54,11 +48,14 @@ func (h *DashboardHandler) GetPreferences(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "preferences_unavailable", "Could not load your taste preferences.")
 		return
 	}
+	if prefs.Country == "" {
+		prefs.Country = user.Country
+	}
 	writeJSON(w, http.StatusOK, prefs)
 }
 
 func (h *DashboardHandler) PutPreferences(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.music.requireUser(w, r)
+	user, ok := h.music.requireUser(w, r)
 	if !ok {
 		return
 	}

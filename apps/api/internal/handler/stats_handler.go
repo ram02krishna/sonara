@@ -18,7 +18,7 @@ func NewStatsHandler(historyRepo *repository.HistoryRepository, music *MusicHand
 }
 
 func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.music.requireUser(w, r)
+	user, ok := h.music.requireUser(w, r)
 	if !ok {
 		return
 	}
@@ -38,7 +38,7 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 
 // RecordPlay is called by the web player once a track has genuinely been played for a while.
 func (h *StatsHandler) RecordPlay(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.music.requireUser(w, r)
+	user, ok := h.music.requireUser(w, r)
 	if !ok {
 		return
 	}

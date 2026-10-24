@@ -29,22 +29,6 @@ func NewUserRepository(db *pgxpool.Pool) *UserRepository {
 		memSess:  make(map[string]models.Session),
 	}
 
-	// Seed default Sonara profile for immediate offline / memory listening
-	defaultID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	defaultUser := &models.User{
-		ID:          defaultID,
-		Email:       "listener@sonara.app",
-		DisplayName: "Sonara Listener",
-		AvatarURL:   "",
-		Bio:         "Studio Master Sound Enthusiast",
-		Product:     "premium",
-		Country:     "US",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-	repo.memUsers[defaultID] = defaultUser
-	repo.memEmail["listener@sonara.app"] = defaultID
-
 	return repo
 }
 
@@ -112,12 +96,6 @@ func (r *UserRepository) CreateUser(ctx context.Context, u *models.User) (*model
 	now := time.Now()
 	u.CreatedAt = now
 	u.UpdatedAt = now
-	if u.Product == "" {
-		u.Product = "premium"
-	}
-	if u.Country == "" {
-		u.Country = "US"
-	}
 	cleanEmail := strings.ToLower(strings.TrimSpace(u.Email))
 
 	if r.db == nil {
@@ -340,17 +318,48 @@ func (r *UserRepository) DeleteSession(ctx context.Context, sessionID string) er
 	return err
 }
 
-func (r *UserRepository) GetDefaultUser(ctx context.Context) (*models.User, error) {
+// SetPassword stores a new bcrypt hash for the user.
+func (r *UserRepository) SetPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	if r.db == nil {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		for _, u := range r.memUsers {
-			if u.Email != "listener@sonara.app" {
-				return u, nil
-			}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if u, ok := r.memUsers[id]; ok {
+			u.PasswordHash = hash
 		}
-		defaultID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-		return r.memUsers[defaultID], nil
+		return nil
 	}
-	return nil, nil
+	_, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id, hash)
+	return err
+}
+
+// DeleteUser removes the account; sessions, library, playlists, history and
+// preferences are removed with it (ON DELETE CASCADE).
+func (r *UserRepository) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	if r.db == nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if u, ok := r.memUsers[id]; ok {
+			delete(r.memEmail, u.Email)
+			delete(r.memUsers, id)
+		}
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	return err
+}
+
+// AttachCredentials gives a guest profile a real email and password.
+func (r *UserRepository) AttachCredentials(ctx context.Context, id uuid.UUID, email, hash string) error {
+	if r.db == nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if u, ok := r.memUsers[id]; ok {
+			delete(r.memEmail, u.Email)
+			u.Email, u.PasswordHash = email, hash
+			r.memEmail[email] = id
+		}
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `UPDATE users SET email = $2, password_hash = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id, email, hash)
+	return err
 }

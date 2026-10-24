@@ -1,132 +1,102 @@
 "use client";
 
-import React, { Suspense, useMemo } from "react";
+import React, { Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Heart, ListMusic } from "lucide-react";
-import { friendlyError, useMyPlaylists, useSavedTracks, useTopArtists, useTopTracks } from "@/hooks/useSonara";
-import { ArtistCard, Cover, EmptyState, ErrorState, ShelfSkeleton, TrackRow } from "@/components/ui/media";
+import { Heart, Plus } from "lucide-react";
+import { friendlyError, useFollowing, usePlaylists, useRecentlyPlayed, useSavedAlbums, useSavedTracks } from "@/hooks/useSonara";
+import { usePlayerStore } from "@/store/usePlayerStore";
+import { useUiStore } from "@/store/useUiStore";
+import { AlbumCard, ArtistCard, EmptyState, ErrorState, PlaylistCard, RowSkeleton, TrackRow, useVisible } from "@/components/ui/media";
 import { cn } from "@/lib/utils";
-import { useAppStore } from "@/store/useAppStore";
 
-type Tab = "liked" | "playlists" | "artists" | "tracks";
+type Tab = "playlists" | "liked" | "artists" | "albums" | "recent";
 const TABS: { id: Tab; label: string }[] = [
-  { id: "liked", label: "Liked Songs" },
   { id: "playlists", label: "Playlists" },
-  { id: "artists", label: "Top Artists" },
-  { id: "tracks", label: "Top Tracks" },
+  { id: "liked", label: "Liked Songs" },
+  { id: "artists", label: "Artists" },
+  { id: "albums", label: "Albums" },
+  { id: "recent", label: "Recently played" },
 ];
 
 function LibraryInner() {
   const router = useRouter();
   const params = useSearchParams();
-  const { isAuthenticated } = useAppStore();
-  const tab = (TABS.find((t) => t.id === params.get("tab"))?.id ?? "liked") as Tab;
+  const tab = (TABS.find((t) => t.id === params.get("tab"))?.id ?? "playlists") as Tab;
+  const openCreatePlaylist = useUiStore((s) => s.openCreatePlaylist);
+  const playList = usePlayerStore((s) => s.playList);
 
-  const liked = useSavedTracks(isAuthenticated && tab === "liked");
-  const playlists = useMyPlaylists(isAuthenticated && tab === "playlists");
-  const artists = useTopArtists("medium_term", isAuthenticated && tab === "artists");
-  const tracks = useTopTracks("medium_term", isAuthenticated && tab === "tracks");
+  const playlists = usePlaylists(tab === "playlists");
+  const liked = useSavedTracks(tab === "liked");
+  const artists = useFollowing(tab === "artists");
+  const albums = useSavedAlbums(tab === "albums");
+  const recent = useRecentlyPlayed(tab === "recent");
+  const likedTracks = useVisible(liked.data);
+  const recentTracks = useVisible(recent.data?.map((r) => r.track));
 
-  const active = useMemo(() => ({ liked, playlists, artists, tracks })[tab], [tab, liked, playlists, artists, tracks]);
+  const active = { playlists, liked, artists, albums, recent }[tab];
   const err = active.error ? friendlyError(active.error) : null;
 
   return (
-    <div className="p-4 md:p-8 space-y-6 max-w-6xl mx-auto">
-      <header className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 flex items-center justify-center shadow-lg">
-          <Heart className="w-7 h-7 text-white fill-white" />
-        </div>
-        <div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-foreground">Your Library</h1>
-          <p className="text-sm text-muted-foreground">Your personal collection, liked tracks, and favorite artists</p>
-        </div>
+    <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
+      <header className="flex items-center justify-between gap-4">
+        <h1 className="text-3xl font-extrabold tracking-tight text-foreground">Your Library</h1>
+        <button onClick={() => openCreatePlaylist()} className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-brand text-sm font-semibold shadow-brand"><Plus className="w-4 h-4" />New playlist</button>
       </header>
 
-      {!isAuthenticated ? (
-        <div className="glass-card rounded-3xl p-10 text-center max-w-lg mx-auto space-y-4 my-8">
-          <div className="w-16 h-16 rounded-2xl bg-primary/20 text-primary flex items-center justify-center mx-auto">
-            <Heart className="w-8 h-8 fill-current" />
-          </div>
-          <h2 className="text-2xl font-bold text-foreground">Enjoy your Library</h2>
-          <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-            Log in to see your liked songs, saved playlists, and favorite artists in one place.
-          </p>
-          <div className="pt-2">
-            <Link
-              href="/login?tab=signin"
-              className="inline-block px-8 py-3 rounded-full bg-foreground text-background font-bold text-sm hover:scale-105 active:scale-95 transition-all shadow-lg"
-            >
-              Log in
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-2">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => router.replace(`/library?tab=${t.id}`)}
-                className={cn(
-                  "px-4 py-1.5 rounded-full text-sm font-medium transition-colors",
-                  tab === t.id ? "bg-foreground text-background" : "glass-pill text-foreground hover:bg-foreground/10"
-                )}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+      <div className="flex flex-wrap gap-2" role="tablist">
+        {TABS.map((t) => (
+          <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => router.replace(`/library?tab=${t.id}`)} className={cn("px-4 py-1.5 rounded-full text-sm font-medium transition-colors", tab === t.id ? "bg-foreground text-background" : "glass-pill text-foreground")}>{t.label}</button>
+        ))}
+      </div>
 
-          {err && <ErrorState title={err.title} detail={err.detail} onRetry={() => active.refetch()} />}
-          {active.isLoading && <ShelfSkeleton />}
-
-      {!err && !active.isLoading && tab === "liked" && (
-        (liked.data ?? []).length ? (
-          <div className="space-y-0.5">
-            {liked.data!.map((t, i) => <TrackRow key={t.id} track={t} index={i} context={liked.data} />)}
-          </div>
-        ) : (
-          <EmptyState title="No liked songs yet" detail="Tap the heart in the player to save songs here." />
-        )
-      )}
-
-      {!err && !active.isLoading && tab === "tracks" && (
-        <div className="space-y-0.5">
-          {(tracks.data ?? []).map((t, i) => <TrackRow key={t.id} track={t} index={i} context={tracks.data} />)}
-          {!tracks.data?.length && <EmptyState title="No top tracks yet" detail="Listen to tracks in Sonara and they'll show up here." />}
-        </div>
-      )}
-
-      {!err && !active.isLoading && tab === "artists" && (
-        (artists.data ?? []).length ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {artists.data!.map((a) => <ArtistCard key={a.id} artist={a} />)}
-          </div>
-        ) : (
-          <EmptyState title="No top artists yet" detail="Listen to your favorite artists in Sonara and they'll show up here." />
-        )
-      )}
+      {err && <ErrorState title={err.title} detail={err.detail} onRetry={() => active.refetch()} />}
+      {active.isLoading && <RowSkeleton rows={6} />}
 
       {!err && !active.isLoading && tab === "playlists" && (
-        (playlists.data ?? []).length ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {playlists.data!.map((p) => (
-              <Link key={p.id} href={`/playlist/${p.id}`} className="group flex items-center gap-3 p-3 rounded-2xl glass-card">
-                <Cover src={p.images?.[0]?.url} alt={p.name} className="w-16 h-16 shrink-0 rounded-xl" />
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">{p.name}</p>
-                  <p className="text-xs text-muted-foreground flex items-center gap-1"><ListMusic className="w-3 h-3" />{p.tracks_total ?? 0} tracks</p>
-                </div>
-              </Link>
-            ))}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          <Link href="/library?tab=liked" className="p-3 rounded-3xl glass-card card-lift block">
+            <span className="aspect-square w-full rounded-2xl bg-brand flex items-center justify-center shadow-lg"><Heart className="w-1/3 h-1/3 fill-current" /></span>
+            <p className="mt-3 text-sm font-semibold">Liked Songs</p>
+            <p className="text-xs text-muted-foreground">Your saved songs</p>
+          </Link>
+          {(playlists.data ?? []).map((p) => <PlaylistCard key={p.id} playlist={p} />)}
+          <button onClick={() => openCreatePlaylist()} className="p-3 rounded-3xl border border-dashed border-foreground/20 hover:border-foreground/40 flex flex-col items-center justify-center gap-2 min-h-[11rem] text-muted-foreground hover:text-foreground transition-colors">
+            <Plus className="w-8 h-8" /><span className="text-sm font-semibold">Create playlist</span>
+          </button>
+        </div>
+      )}
+
+      {!err && !active.isLoading && tab === "liked" &&
+        (likedTracks.length ? (
+          <div>
+            <button onClick={() => playList(likedTracks, 0)} className="mb-3 px-5 py-2 rounded-full bg-brand text-sm font-semibold">Play all</button>
+            <div className="space-y-0.5">{likedTracks.map((t, i) => <TrackRow key={t.id} track={t} index={i} context={likedTracks} />)}</div>
           </div>
         ) : (
-          <EmptyState title="No playlists yet" detail="Create or follow a playlist to see it here." />
-        )
-      )}
-        </>
-      )}
+          <EmptyState icon={Heart} title="No liked songs yet" detail="Tap the heart on any song to save it here." />
+        ))}
+
+      {!err && !active.isLoading && tab === "artists" &&
+        ((artists.data ?? []).length ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">{artists.data!.map((a) => <ArtistCard key={a.id} artist={a} />)}</div>
+        ) : (
+          <EmptyState title="You aren't following anyone yet" detail="Open an artist and press Follow to keep them here." />
+        ))}
+
+      {!err && !active.isLoading && tab === "albums" &&
+        ((albums.data ?? []).length ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{albums.data!.map((a) => <AlbumCard key={a.id} album={a} />)}</div>
+        ) : (
+          <EmptyState title="No saved albums" detail="Open an album and press the heart to save it." />
+        ))}
+
+      {!err && !active.isLoading && tab === "recent" &&
+        (recentTracks.length ? (
+          <div className="space-y-0.5">{recentTracks.map((t, i) => <TrackRow key={t.id} track={t} index={i} context={recentTracks} />)}</div>
+        ) : (
+          <EmptyState title="Nothing played yet" detail="Songs you listen to for 15 seconds or more show up here." />
+        ))}
     </div>
   );
 }

@@ -17,6 +17,8 @@ type Config struct {
 	SpotifyRedirectURI   string
 	SpotifyDefaultMarket string
 	LRCLIBApiURL         string
+	YouTubeAPIKey        string
+	CookieSecure         bool
 	AllowedOrigins       string
 }
 
@@ -60,6 +62,8 @@ func Load() *Config {
 		SpotifyClientSecret:  getEnv("SPOTIFY_CLIENT_SECRET", ""),
 		SpotifyDefaultMarket: getEnv("SPOTIFY_DEFAULT_MARKET", "US"),
 		SpotifyRedirectURI:   getEnv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8080/api/v1/auth/callback"),
+		YouTubeAPIKey:        getEnv("YOUTUBE_API_KEY", ""),
+		CookieSecure:         getEnv("COOKIE_SECURE", "false") == "true",
 		LRCLIBApiURL:         getEnv("LRCLIB_API_URL", "https://lrclib.net/api"),
 		AllowedOrigins:       getEnv("ALLOWED_ORIGINS", "http://127.0.0.1:3000"),
 	}

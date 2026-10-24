@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/google/uuid"
@@ -41,6 +42,7 @@ func (r *LibraryRepository) EnsureSchema(ctx context.Context) error {
 			PRIMARY KEY (user_id, track_uri)
 		);
 		CREATE INDEX IF NOT EXISTS idx_user_library_added ON user_library(user_id, added_at DESC);
+		ALTER TABLE user_library ADD COLUMN IF NOT EXISTS track_json JSONB;
 	`
 	_, err := r.db.Exec(ctx, query)
 	return err
@@ -73,12 +75,13 @@ func (r *LibraryRepository) SaveTrack(ctx context.Context, userID uuid.UUID, t m
 		return nil
 	}
 
+	blob, _ := json.Marshal(t)
 	query := `
-		INSERT INTO user_library (user_id, track_uri, track_id, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (user_id, track_uri) DO NOTHING;
+		INSERT INTO user_library (user_id, track_uri, track_id, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms, track_json)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (user_id, track_uri) DO UPDATE SET track_json = EXCLUDED.track_json;
 	`
-	_, err := r.db.Exec(ctx, query, userID, t.URI, t.ID, t.Name, artist, t.Album.Name, art, preview, t.DurationMs)
+	_, err := r.db.Exec(ctx, query, userID, t.URI, t.ID, t.Name, artist, t.Album.Name, art, preview, t.DurationMs, blob)
 	return err
 }
 
@@ -115,8 +118,8 @@ func (r *LibraryRepository) IsTrackSaved(ctx context.Context, userID uuid.UUID, 
 }
 
 func (r *LibraryRepository) GetSavedTracks(ctx context.Context, userID uuid.UUID, limit int) ([]models.Track, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	if limit <= 0 || limit > 1000 {
+		limit = 500
 	}
 
 	if r.db == nil {
@@ -135,7 +138,7 @@ func (r *LibraryRepository) GetSavedTracks(ctx context.Context, userID uuid.UUID
 	}
 
 	query := `
-		SELECT track_id, track_uri, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms
+		SELECT track_id, track_uri, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms, track_json
 		FROM user_library
 		WHERE user_id = $1
 		ORDER BY added_at DESC
@@ -151,8 +154,14 @@ func (r *LibraryRepository) GetSavedTracks(ctx context.Context, userID uuid.UUID
 	for rows.Next() {
 		var id, uri, name, artist, album, art, preview string
 		var durationMs int
-		if err := rows.Scan(&id, &uri, &name, &artist, &album, &art, &preview, &durationMs); err != nil {
+		var full *models.Track
+		if err := rows.Scan(&id, &uri, &name, &artist, &album, &art, &preview, &durationMs, &full); err != nil {
 			return nil, err
+		}
+		if full != nil && full.ID != "" {
+			full.IsLiked = true
+			out = append(out, *full)
+			continue
 		}
 		var pURL *string
 		if preview != "" {

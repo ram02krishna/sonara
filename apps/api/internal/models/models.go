@@ -175,3 +175,24 @@ type DashboardResponse struct {
 	Market          string             `json:"market"`
 	GeneratedAt     time.Time          `json:"generated_at"`
 }
+
+// AlbumDetail is an album with its tracks (album pages).
+type AlbumDetail struct {
+	Album       AlbumSummary    `json:"album"`
+	Artists     []ArtistSummary `json:"artists"`
+	Label       string          `json:"label,omitempty"`
+	TotalTracks int             `json:"total_tracks"`
+	Tracks      []Track         `json:"tracks"`
+}
+
+// UserPlaylist is a playlist created by a Sonara user.
+type UserPlaylist struct {
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	TrackCount  int       `json:"track_count"`
+	Covers      []string  `json:"covers"`
+	Tracks      []Track   `json:"tracks,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}

@@ -58,6 +58,8 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
       SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8080/api/v1/auth/callback}
       SPOTIFY_DEFAULT_MARKET: ${SPOTIFY_DEFAULT_MARKET:-IN}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       LRCLIB_API_URL: ${LRCLIB_API_URL:-https://lrclib.net/api}
     ports:
       - "8080:8080"
@@ -66,6 +68,8 @@ services:
     build:
       context: ..
       dockerfile: infra/Dockerfile.web
+      args:
+        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8080/api/v1}
     container_name: sonara-web
     restart: unless-stopped
     depends_on:
@@ -74,7 +78,6 @@ services:
       NODE_ENV: production
       PORT: 3000
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://127.0.0.1:3000}
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:8080/api/v1}
     ports:
       - "3000:3000"
 

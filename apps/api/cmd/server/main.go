@@ -74,37 +74,48 @@ func main() {
 	}
 
 	// Providers & Repositories
+	ctxBG := context.Background()
 	userRepo := repository.NewUserRepository(dbPool)
-	if err := userRepo.EnsureSchema(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("could not ensure user schema")
-	}
 	historyRepo := repository.NewHistoryRepository(dbPool)
-	if err := historyRepo.EnsureSchema(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("could not ensure play_history.listened_ms column")
-	}
 	prefsRepo := repository.NewPreferencesRepository(dbPool)
-	if err := prefsRepo.EnsureSchema(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("could not ensure user_preferences table")
-	}
 	libraryRepo := repository.NewLibraryRepository(dbPool)
-	if err := libraryRepo.EnsureSchema(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("could not ensure user_library table")
+	collectionRepo := repository.NewCollectionRepository(dbPool)
+	playlistRepo := repository.NewPlaylistRepository(dbPool)
+	// Order matters: users first (other tables reference it).
+	for _, step := range []struct {
+		name string
+		fn   func(context.Context) error
+	}{
+		{"users", userRepo.EnsureSchema}, {"history", historyRepo.EnsureSchema}, {"preferences", prefsRepo.EnsureSchema},
+		{"library", libraryRepo.EnsureSchema}, {"collection", collectionRepo.EnsureSchema}, {"playlists", playlistRepo.EnsureSchema},
+	} {
+		if err := step.fn(ctxBG); err != nil {
+			log.Warn().Err(err).Str("schema", step.name).Msg("could not ensure schema")
+		}
 	}
 
 	authService := service.NewAuthService(cfg, userRepo, rdb)
 	spotifyProvider := provider.NewSpotifyProvider(cfg.SpotifyClientID, cfg.SpotifyClientSecret, cfg.SpotifyDefaultMarket)
+	if !spotifyProvider.Configured() {
+		log.Warn().Msg("SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET not set: catalogue search will fall back to iTunes only")
+	}
 	previewClient := provider.NewITunesPreviewClient()
+	youtubeClient := provider.NewYouTubeClient(cfg.YouTubeAPIKey)
 
 	var dashCache dashboard.Cache = dashboard.NewMemoryCache()
 	if rdb != nil {
 		dashCache = dashboard.NewRedisCache(rdb)
 	}
-	dashBuilder := dashboard.NewBuilder(spotifyProvider, dashCache)
+	dashBuilder := dashboard.NewBuilder(spotifyProvider, historyRepo, dashCache)
 	lrclibClient := provider.NewLRCLIBClient(cfg.LRCLIBApiURL)
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(cfg, authService)
-	musicHandler := handler.NewMusicHandler(userRepo, prefsRepo, historyRepo, libraryRepo, authService, spotifyProvider, previewClient)
+	musicHandler := handler.NewMusicHandler(handler.MusicDeps{
+		Users: userRepo, Prefs: prefsRepo, History: historyRepo, Library: libraryRepo, Collection: collectionRepo,
+		Playlists: playlistRepo, Auth: authService, Catalog: spotifyProvider, Previews: previewClient, YouTube: youtubeClient,
+		AuthHandler: authHandler,
+	})
 	dashboardHandler := handler.NewDashboardHandler(musicHandler, dashBuilder)
 	lyricsHandler := handler.NewLyricsHandler(lrclibClient)
 	statsHandler := handler.NewStatsHandler(historyRepo, musicHandler)
@@ -153,46 +164,68 @@ func main() {
 
 	// API V1 Route Group
 	r.Route("/api/v1", func(api chi.Router) {
-		// Native Sonara Auth Routes
-		api.Post("/auth/signup", authHandler.Signup)
-		api.Post("/auth/login", authHandler.Login)
-		api.Post("/auth/guest", authHandler.Guest)
+		api.Get("/config", musicHandler.GetConfig)
+
+		// Sonara accounts (rate limited against password guessing)
+		api.Group(func(g chi.Router) {
+			g.Use(handler.RateLimit(20, time.Minute))
+			g.Post("/auth/signup", authHandler.Signup)
+			g.Post("/auth/login", authHandler.Login)
+			g.Post("/auth/guest", authHandler.Guest)
+		})
 		api.Post("/auth/logout", authHandler.Logout)
 		api.Get("/auth/session", authHandler.Session)
 
-		// Music & Catalog
+		// Account
 		api.Get("/me", musicHandler.GetMe)
-		api.Get("/me/top/artists", musicHandler.GetTopArtists)
-		api.Get("/me/top/tracks", musicHandler.GetTopTracks)
-		api.Get("/me/recently-played", musicHandler.GetRecentlyPlayed)
+		api.Put("/me/profile", musicHandler.UpdateProfile)
+		api.Put("/me/password", musicHandler.ChangePassword)
+		api.Post("/me/upgrade", musicHandler.UpgradeGuest)
+		api.Delete("/me", musicHandler.DeleteAccount)
+		api.Get("/me/export", musicHandler.ExportData)
+		api.Get("/me/preferences", dashboardHandler.GetPreferences)
+		api.Put("/me/preferences", dashboardHandler.PutPreferences)
+
+		// Catalogue
 		api.Get("/search", musicHandler.Search)
 		api.Get("/preview", musicHandler.GetPreview)
-		api.Get("/auth/token", musicHandler.GetPlayerToken)
-		api.Get("/me/playlists", musicHandler.GetMyPlaylists)
+		api.Get("/video", musicHandler.GetVideo)
+		api.Get("/artists/{id}", musicHandler.GetArtist)
+		api.Get("/albums/{id}", musicHandler.GetAlbum)
+		api.Get("/browse", musicHandler.ListCategories)
+		api.Get("/browse/{slug}", musicHandler.GetCategory)
+		api.Get("/dashboard", dashboardHandler.GetDashboard)
+		api.Get("/lyrics", lyricsHandler.GetLyrics)
+
+		// Listening history & insights
+		api.Get("/me/recently-played", musicHandler.GetRecentlyPlayed)
+		api.Get("/me/top/tracks", musicHandler.GetTopTracks)
+		api.Get("/me/top/artists", musicHandler.GetTopArtists)
+		api.Delete("/me/history", musicHandler.ClearHistory)
+		api.Get("/stats", statsHandler.GetStats)
+		api.Post("/history", statsHandler.RecordPlay)
+
+		// Library
 		api.Get("/me/tracks", musicHandler.GetSavedTracks)
 		api.Put("/me/library", musicHandler.SaveTrack)
 		api.Delete("/me/library", musicHandler.RemoveTrack)
 		api.Get("/me/library/contains", musicHandler.TrackSaved)
+		api.Get("/me/following", musicHandler.ListFollowing())
+		api.Put("/me/following/{id}", musicHandler.FollowArtist())
+		api.Delete("/me/following/{id}", musicHandler.UnfollowArtist())
+		api.Get("/me/albums", musicHandler.ListSavedAlbums())
+		api.Put("/me/albums/{id}", musicHandler.SaveAlbum())
+		api.Delete("/me/albums/{id}", musicHandler.UnsaveAlbum())
+
+		// Playlists
+		api.Get("/playlists", musicHandler.ListPlaylists)
+		api.Post("/playlists", musicHandler.CreatePlaylist)
 		api.Get("/playlists/{id}", musicHandler.GetPlaylist)
-		api.Get("/artists/{id}", musicHandler.GetArtist)
-		api.Get("/dashboard", dashboardHandler.GetDashboard)
-		api.Get("/me/preferences", dashboardHandler.GetPreferences)
-		api.Put("/me/preferences", dashboardHandler.PutPreferences)
-
-		// Playback Controls
-		api.Get("/me/player", musicHandler.GetPlaybackState)
-		api.Get("/me/player/devices", musicHandler.GetDevices)
-		api.Put("/me/player/play", musicHandler.Play)
-		api.Put("/me/player/pause", musicHandler.Pause)
-		api.Post("/me/player/next", musicHandler.Next)
-		api.Post("/me/player/previous", musicHandler.Previous)
-		api.Put("/me/player/seek", musicHandler.Seek)
-		api.Put("/me/player/volume", musicHandler.SetVolume)
-
-		// Lyrics & Analytics
-		api.Get("/lyrics", lyricsHandler.GetLyrics)
-		api.Get("/stats", statsHandler.GetStats)
-		api.Post("/history", statsHandler.RecordPlay)
+		api.Put("/playlists/{id}", musicHandler.UpdatePlaylist)
+		api.Delete("/playlists/{id}", musicHandler.DeletePlaylist)
+		api.Post("/playlists/{id}/tracks", musicHandler.AddPlaylistTracks)
+		api.Put("/playlists/{id}/move", musicHandler.MovePlaylistTrack)
+		api.Delete("/playlists/{id}/tracks/{trackId}", musicHandler.RemovePlaylistTrack)
 	})
 
 	// Server Start & Graceful Shutdown

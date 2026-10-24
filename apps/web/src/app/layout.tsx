@@ -10,10 +10,10 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Sonara — Modern Lossless Music Streaming",
+  title: "Sonara — Music for every taste",
   description:
-    "Experience music at its pinnacle. Sonara delivers pristine aesthetics, studio lossless audio, dynamic album reactive theming, and time-synced lyrics.",
-  keywords: ["music streaming", "lossless audio", "lyrics", "studio audio", "bento dashboard"],
+    "Sonara is a personal music app: discover music in any language, build playlists, follow artists, sing along with synced lyrics and see your listening insights.",
+  keywords: ["music", "playlists", "lyrics", "discover music", "listening stats"],
   authors: [{ name: "Sonara Engineering" }],
   icons: {
     icon: "/favicon.ico",
@@ -24,11 +24,10 @@ export const viewport: Viewport = {
   themeColor: "#8b5cf6",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
 // Runs before first paint so the saved/system theme is applied with no flash.
-const themeInitScript = `(function(){try{var t=localStorage.getItem('sonara-theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}var d=document.documentElement;d.setAttribute('data-theme',t);d.classList.toggle('dark',t==='dark');}catch(e){}})();`;
+const themeInitScript = `(function(){try{var d=document.documentElement,t=localStorage.getItem('sonara-theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}d.setAttribute('data-theme',t);d.classList.toggle('dark',t==='dark');var a=localStorage.getItem('sonara-accent');if(a)d.setAttribute('data-accent',a);}catch(e){}})();`;
 
 export default function RootLayout({
   children,

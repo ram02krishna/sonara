@@ -47,8 +47,11 @@ func (s *AuthService) Register(ctx context.Context, email, password, displayName
 	if cleanEmail == "" {
 		return nil, "", errors.New("email is required")
 	}
-	if len(password) < 6 {
-		return nil, "", errors.New("password must be at least 6 characters")
+	if !strings.Contains(cleanEmail, "@") || len(cleanEmail) > 254 {
+		return nil, "", errors.New("enter a valid email address")
+	}
+	if len(password) < 8 {
+		return nil, "", errors.New("password must be at least 8 characters")
 	}
 	if cleanName == "" {
 		cleanName = strings.Split(cleanEmail, "@")[0]
@@ -69,8 +72,7 @@ func (s *AuthService) Register(ctx context.Context, email, password, displayName
 		Email:        cleanEmail,
 		PasswordHash: string(hash),
 		DisplayName:  cleanName,
-		Product:      "premium",
-		Country:      "US",
+		Country:      s.cfg.SpotifyDefaultMarket,
 	}
 
 	saved, err := s.userRepo.CreateUser(ctx, user)
@@ -110,42 +112,84 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*model
 	return user, sessionID, nil
 }
 
-// GuestLogin creates or retrieves an instant listener profile
+// GuestLogin creates a brand-new, isolated listener profile (no email or password).
+// Each guest gets their own data; there is no shared fallback account.
 func (s *AuthService) GuestLogin(ctx context.Context, displayName string) (*models.User, string, error) {
 	cleanName := strings.TrimSpace(displayName)
 	if cleanName == "" {
-		cleanName = "Sonara Listener"
+		cleanName = "Listener"
 	}
-
 	guestID := uuid.New()
-	guestEmail := fmt.Sprintf("guest-%s@sonara.app", guestID.String()[:8])
-
 	user := &models.User{
-		ID:           guestID,
-		Email:        guestEmail,
-		DisplayName:  cleanName,
-		Bio:          "Studio Master Guest",
-		Product:      "premium",
-		Country:      "US",
-		PasswordHash: "",
+		ID:          guestID,
+		Email:       fmt.Sprintf("guest-%s@guest.sonara.local", guestID.String()),
+		DisplayName: cleanName,
+		Country:     s.cfg.SpotifyDefaultMarket,
 	}
-
 	saved, err := s.userRepo.CreateUser(ctx, user)
 	if err != nil {
-		// Fallback to default user
-		defaultID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-		saved, _ = s.userRepo.GetByID(ctx, defaultID)
-		if saved == nil {
-			saved = user
-		}
+		return nil, "", fmt.Errorf("could not create guest profile: %w", err)
 	}
-
 	sessionID, err := s.createSession(ctx, saved.ID)
 	if err != nil {
 		return nil, "", err
 	}
-
 	return saved, sessionID, nil
+}
+
+// UpdateProfile changes the display name and/or region.
+func (s *AuthService) UpdateProfile(ctx context.Context, user *models.User, name, country string) (*models.User, error) {
+	if n := strings.TrimSpace(name); n != "" {
+		if len(n) > 60 {
+			return nil, errors.New("name is too long")
+		}
+		user.DisplayName = n
+	}
+	if c := strings.ToUpper(strings.TrimSpace(country)); len(c) == 2 {
+		user.Country = c
+	}
+	return s.userRepo.UpdateUser(ctx, user)
+}
+
+// ChangePassword verifies the current password (when the account has one) and sets a new one.
+func (s *AuthService) ChangePassword(ctx context.Context, user *models.User, current, next string) error {
+	if len(next) < 8 {
+		return errors.New("new password must be at least 8 characters")
+	}
+	if user.PasswordHash != "" {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)); err != nil {
+			return errors.New("current password is incorrect")
+		}
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.userRepo.SetPassword(ctx, user.ID, string(hash))
+}
+
+// DeleteAccount permanently deletes the user and everything they own.
+func (s *AuthService) DeleteAccount(ctx context.Context, user *models.User) error {
+	return s.userRepo.DeleteUser(ctx, user.ID)
+}
+
+// UpgradeGuest turns a guest profile into a full account by attaching an email and password.
+func (s *AuthService) UpgradeGuest(ctx context.Context, user *models.User, email, password string) error {
+	cleanEmail := strings.ToLower(strings.TrimSpace(email))
+	if !strings.Contains(cleanEmail, "@") {
+		return errors.New("enter a valid email address")
+	}
+	if len(password) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+	if existing, _ := s.userRepo.GetByEmail(ctx, cleanEmail); existing != nil && existing.ID != user.ID {
+		return errors.New("an account with this email already exists")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.userRepo.AttachCredentials(ctx, user.ID, cleanEmail, string(hash))
 }
 
 func (s *AuthService) createSession(ctx context.Context, userID uuid.UUID) (string, error) {

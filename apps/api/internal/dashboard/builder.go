@@ -9,35 +9,45 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/sonara/api/internal/models"
 )
 
-// Source is the subset of the music provider the dashboard needs (easy to fake in tests).
+// Source is the catalogue the dashboard reads from (Spotify via app credentials).
 type Source interface {
-	GetTopArtists(ctx context.Context, accessToken string, timeRange string, limit int) ([]models.Artist, error)
-	GetTopTracks(ctx context.Context, accessToken string, timeRange string, limit int) ([]models.Track, error)
-	GetRecentlyPlayed(ctx context.Context, accessToken string, limit int) ([]models.PlayHistoryItem, error)
-	Search(ctx context.Context, accessToken string, query string, types string, limit int, market string) (*models.SearchResult, error)
-	SearchNewAlbums(ctx context.Context, accessToken string, market string, limit int) ([]models.AlbumSummary, error)
+	Search(ctx context.Context, query, types string, limit, offset int, market string) (*models.SearchResult, error)
+	SearchNewAlbums(ctx context.Context, market string, limit int) ([]models.AlbumSummary, error)
+	GetArtist(ctx context.Context, id string) (*models.Artist, error)
 }
 
-const maxTasteShelves = 5
+// History is the listener's own Sonara listening history. Personalisation comes
+// from what people actually play in Sonara, not from any Spotify account.
+type History interface {
+	Recent(ctx context.Context, userID uuid.UUID, limit int) ([]models.PlayHistoryItem, error)
+	TopTracks(ctx context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.Track, error)
+	TopArtists(ctx context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.ArtistSummary, error)
+}
+
+const maxTasteShelves = 16
 
 // Input describes who the dashboard is for.
 type Input struct {
-	UserID string
-	Token  string // user's Spotify access token
-	Market string // "from_token" or an ISO code
-	Prefs  models.Preferences
+	UserUUID uuid.UUID
+	UserID   string
+	Market   string // ISO country code; empty = catalogue default
+	Prefs    models.Preferences
 }
 
 type Builder struct {
 	src   Source
+	hist  History
 	cache Cache
 }
 
-func NewBuilder(src Source, cache Cache) *Builder { return &Builder{src: src, cache: cache} }
+func NewBuilder(src Source, hist History, cache Cache) *Builder {
+	return &Builder{src: src, hist: hist, cache: cache}
+}
 
 // seed is one taste shelf to build: a title and the Spotify queries to try.
 type seed struct {
@@ -53,42 +63,83 @@ type seed struct {
 // page still renders. Nothing here is hardcoded content.
 func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse {
 	market := in.Market
-	if market == "" {
-		market = "from_token"
-	}
 	if in.Prefs.Country != "" {
 		market = strings.ToUpper(in.Prefs.Country)
 	}
 
+	userKey := in.UserID
+	if userKey == "" {
+		userKey = in.UserUUID.String()
+	}
+	if userKey == "" {
+		userKey = "guest"
+	}
+
+	fullDashKey := key(userKey, fmt.Sprintf("fulldash:%s:%s", marketScope(in, market), hashTaste(in.Prefs, nil)))
+	if b.cache != nil {
+		var cachedResp models.DashboardResponse
+		if b.cache.Get(ctx, fullDashKey, &cachedResp) {
+			return &cachedResp
+		}
+	}
+
 	var (
-		wg      sync.WaitGroup
-		artists []models.Artist
-		tracks  []models.Track
-		recent  []models.PlayHistoryItem
+		wg           sync.WaitGroup
+		histArtists  []models.Artist
+		tunedArtists []models.Artist
+		tracks       []models.Track
+		recent       []models.PlayHistoryItem
 	)
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		artists = cached(ctx, b.cache, key(in.UserID, "top-artists"), time.Hour, func() ([]models.Artist, error) {
-			return b.src.GetTopArtists(ctx, in.Token, "medium_term", 20)
-		})
+		top, err := b.hist.TopArtists(ctx, in.UserUUID, "alltime", 8)
+		if err != nil {
+			log.Warn().Err(err).Msg("dashboard: top artists unavailable")
+			return
+		}
+		histArtists = b.hydrateArtists(ctx, top)
 	}()
 	go func() {
 		defer wg.Done()
-		tracks = cached(ctx, b.cache, key(in.UserID, "top-tracks"), time.Hour, func() ([]models.Track, error) {
-			return b.src.GetTopTracks(ctx, in.Token, "medium_term", 20)
-		})
+		if len(in.Prefs.Artists) > 0 {
+			tunedArtists = b.hydrateArtists(ctx, in.Prefs.Artists)
+		}
 	}()
 	go func() {
 		defer wg.Done()
-		recent = cached(ctx, b.cache, key(in.UserID, "recent"), 2*time.Minute, func() ([]models.PlayHistoryItem, error) {
-			return b.src.GetRecentlyPlayed(ctx, in.Token, 30)
-		})
+		var err error
+		if tracks, err = b.hist.TopTracks(ctx, in.UserUUID, "alltime", 20); err != nil {
+			log.Warn().Err(err).Msg("dashboard: top tracks unavailable")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		if recent, err = b.hist.Recent(ctx, in.UserUUID, 30); err != nil {
+			log.Warn().Err(err).Msg("dashboard: recent plays unavailable")
+		}
 	}()
 	wg.Wait()
 
-	topGenres := RankGenres(artists)
-	seeds := buildSeeds(topGenres, artists, in.Prefs)
+	// Merge listening history artists with user's tuned artists
+	mergedArtists := append([]models.Artist{}, histArtists...)
+	seenArtist := make(map[string]bool)
+	for _, a := range histArtists {
+		seenArtist[strings.ToLower(a.ID)] = true
+		seenArtist[strings.ToLower(a.Name)] = true
+	}
+	for _, ta := range tunedArtists {
+		if !seenArtist[strings.ToLower(ta.ID)] && !seenArtist[strings.ToLower(ta.Name)] {
+			seenArtist[strings.ToLower(ta.ID)] = true
+			seenArtist[strings.ToLower(ta.Name)] = true
+			mergedArtists = append(mergedArtists, ta)
+		}
+	}
+	allArtists := mergedArtists
+
+	topGenres := RankGenres(allArtists)
+	seeds := buildSeeds(topGenres, allArtists, in.Prefs)
 
 	// Taste shelves and personalized new releases run in parallel; results keep seed order.
 	shelves := make([][]models.Track, len(seeds))
@@ -108,7 +159,7 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 	swg.Add(1)
 	go func() {
 		defer swg.Done()
-		news, newsSubtitle = b.fetchTasteTunedNewReleases(ctx, in, market, topGenres, artists)
+		news, newsSubtitle = b.fetchTasteTunedNewReleases(ctx, in, market, topGenres, allArtists)
 	}()
 	swg.Wait()
 
@@ -118,13 +169,18 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 		Market:      market,
 		GeneratedAt: time.Now().UTC(),
 	}
-	hasHistory := len(artists) > 0 || len(tracks) > 0 || len(recent) > 0
-	resp.NeedsOnboarding = !in.Prefs.Onboarded && !hasHistory
+	hasHistory := len(histArtists) > 0 || len(tracks) > 0 || len(recent) > 0
+	hasTunedTaste := len(in.Prefs.Languages) > 0 || len(in.Prefs.Genres) > 0 || len(in.Prefs.Artists) > 0
+	resp.NeedsOnboarding = !in.Prefs.Onboarded && !hasHistory && !hasTunedTaste
 
-	// Hero: the user's #1 artist when known.
-	if len(artists) > 0 {
+	// Hero: the user's top artist (either from listening history or tuned preferences).
+	if len(allArtists) > 0 {
+		heroTitle := "Your top artist"
+		if len(histArtists) == 0 && len(tunedArtists) > 0 {
+			heroTitle = "Featured from your taste"
+		}
 		resp.Sections = append(resp.Sections, models.DashboardSection{
-			ID: "hero", Type: "hero", Kind: "artists", Title: "Your top artist", Artists: artists[:1],
+			ID: "hero", Type: "hero", Kind: "artists", Title: heroTitle, Artists: allArtists[:1],
 		})
 	}
 
@@ -143,9 +199,13 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 		})
 	}
 
-	if len(artists) > 0 {
+	if len(allArtists) > 0 {
+		artistTitle := "Your top artists"
+		if len(histArtists) == 0 && len(tunedArtists) > 0 {
+			artistTitle = "Your tuned artists"
+		}
 		resp.Sections = append(resp.Sections, models.DashboardSection{
-			ID: "top-artists", Type: "carousel", Kind: "artists", Title: "Your top artists", Artists: firstArtists(artists, 15),
+			ID: "top-artists", Type: "carousel", Kind: "artists", Title: artistTitle, Artists: firstArtists(allArtists, 15),
 		})
 	}
 
@@ -172,12 +232,11 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 
 	if len(news) > 0 {
 		resp.Sections = append(resp.Sections, models.DashboardSection{
-			ID: "new-releases", Type: "grid", Kind: "albums", Title: "New releases", Subtitle: newsSubtitle, Albums: news,
+			ID: "new-releases", Type: "carousel", Kind: "albums", Title: "New releases", Subtitle: newsSubtitle, Albums: news,
 		})
 	}
 
-	// Cold start with no top artist: promote the first taste shelf's lead track to a hero.
-	if len(artists) == 0 {
+	if len(allArtists) == 0 {
 		for i := range seeds {
 			if len(shelves[i]) > 0 {
 				resp.Sections = append([]models.DashboardSection{{
@@ -186,6 +245,10 @@ func (b *Builder) Build(ctx context.Context, in Input) *models.DashboardResponse
 				break
 			}
 		}
+	}
+
+	if b.cache != nil && resp != nil {
+		b.cache.Set(ctx, fullDashKey, resp, 2*time.Minute)
 	}
 	return resp
 }
@@ -198,7 +261,7 @@ func (b *Builder) runSeed(ctx context.Context, in Input, market string, sd seed)
 	return cached(ctx, b.cache, k, 30*time.Minute, func() ([]models.Track, error) {
 		var lastErr error
 		for _, q := range sd.queries {
-			res, err := b.src.Search(ctx, in.Token, q, "track", 10, market)
+			res, err := b.src.Search(ctx, q, "track", 10, 0, market)
 			if err != nil {
 				lastErr = err
 				continue
@@ -224,32 +287,35 @@ func buildSeeds(topGenres []string, topArtists []models.Artist, p models.Prefere
 		seeds = append(seeds, s)
 	}
 
-	for _, g := range firstN(topGenres, 2) {
-		add(seed{id: "genre-" + slug(g), title: "Because you listen to " + titleCase(g), queries: []string{`genre:"` + g + `"`, g}})
-	}
+	// 1. Explicit tuned preferences get highest priority
 	for _, l := range p.Languages {
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		add(seed{id: "lang-" + slug(l), title: titleCase(l) + " picks", sub: "From the languages you chose", queries: languageQueries(l)})
+		add(seed{id: "lang-" + slug(l), title: titleCase(l) + " picks", sub: "From your tuned languages", queries: languageQueries(l)})
 	}
 	for _, g := range p.Genres {
 		if strings.TrimSpace(g) == "" {
 			continue
 		}
-		add(seed{id: "genre-" + slug(g), title: titleCase(g) + " for you", queries: []string{`genre:"` + strings.ToLower(g) + `"`, g}})
+		add(seed{id: "genre-" + slug(g), title: titleCase(g) + " for you", sub: "From your tuned genres", queries: genreQueries(g)})
 	}
 	for _, a := range p.Artists {
 		if a.Name == "" {
 			continue
 		}
-		add(seed{id: "artist-" + slug(a.Name), title: "More from " + a.Name, queries: []string{`artist:"` + a.Name + `"`}})
+		add(seed{id: "artist-" + slug(a.Name), title: "More from " + a.Name, sub: "From your tuned artists", queries: []string{`artist:"` + a.Name + `"`, a.Name + " hits"}})
 	}
-	if len(topGenres) == 0 {
-		for _, a := range firstArtists(topArtists, 2) {
-			add(seed{id: "artist-" + slug(a.Name), title: "More like " + a.Name, queries: []string{`artist:"` + a.Name + `"`}})
-		}
+
+	// 2. Listening history genres & artists
+	for _, g := range firstN(topGenres, 3) {
+		add(seed{id: "genre-" + slug(g), title: "Because you listen to " + titleCase(g), sub: "From your listening history", queries: genreQueries(g)})
 	}
+	for _, a := range firstArtists(topArtists, 3) {
+		add(seed{id: "artist-" + slug(a.Name), title: "More like " + a.Name, sub: "From your listening history", queries: []string{a.Name + " hits", a.Name}})
+	}
+
+	// 3. Cold start fallback if no taste or history at all
 	if len(seeds) == 0 {
 		add(seed{id: "genre-pop", title: "Popular Hits", sub: "Trending music", queries: []string{`genre:"pop"`, "top hits"}})
 		add(seed{id: "genre-hits", title: "Global Top Tracks", sub: "Featured catalogue", queries: []string{"today top hits", "global 50"}})
@@ -258,8 +324,8 @@ func buildSeeds(topGenres []string, topArtists []models.Artist, p models.Prefere
 }
 
 func marketScope(in Input, market string) string {
-	if market == "from_token" {
-		return in.UserID // from_token resolves per user, so don't share across users
+	if market == "" {
+		return "default"
 	}
 	return market
 }
@@ -375,7 +441,7 @@ func (b *Builder) fetchTasteTunedNewReleases(ctx context.Context, in Input, mark
 			nwg.Add(1)
 			go func(idx int, queryStr string) {
 				defer nwg.Done()
-				res, err := b.src.Search(ctx, in.Token, queryStr, "album", 8, market)
+				res, err := b.src.Search(ctx, queryStr, "album", 8, 0, market)
 				if err == nil && res != nil && len(res.Albums) > 0 {
 					albumLists[idx] = res.Albums
 				}
@@ -399,7 +465,7 @@ func (b *Builder) fetchTasteTunedNewReleases(ctx context.Context, in Input, mark
 		}
 
 		if len(combined) == 0 {
-			res, err := b.src.SearchNewAlbums(ctx, in.Token, market, 10)
+			res, err := b.src.SearchNewAlbums(ctx, market, 10)
 			if err == nil {
 				return res, nil
 			}
@@ -471,7 +537,7 @@ func buildNewReleasesQueries(p models.Preferences, topGenres []string, topArtist
 
 	addQuery := func(q string) {
 		q = strings.TrimSpace(q)
-		if q == "" || used[strings.ToLower(q)] || len(queries) >= 3 {
+		if q == "" || used[strings.ToLower(q)] || len(queries) >= 8 {
 			return
 		}
 		used[strings.ToLower(q)] = true
@@ -497,15 +563,18 @@ func buildNewReleasesQueries(p models.Preferences, topGenres []string, topArtist
 	}
 
 	if len(queries) == 0 {
-		for _, tg := range firstN(topGenres, 2) {
+		for _, tg := range firstN(topGenres, 3) {
 			addQuery(newReleaseGenreQuery(tg))
 		}
-		for _, ta := range firstArtists(topArtists, 1) {
+		for _, ta := range firstArtists(topArtists, 2) {
 			addQuery(newReleaseArtistQuery(ta.Name))
 		}
 	}
 
-	queries = append(queries, "tag:new")
+	// ONLY add generic "tag:new" if the user has no tuned preferences and no listening history
+	if len(queries) == 0 {
+		queries = append(queries, "tag:new")
+	}
 	return queries
 }
 
@@ -513,53 +582,109 @@ func newReleaseLanguageQuery(lang string) string {
 	l := strings.ToLower(strings.TrimSpace(lang))
 	switch l {
 	case "hindi":
-		return "tag:new hindi"
+		return "bollywood hits"
 	case "punjabi":
-		return "tag:new punjabi"
+		return "punjabi hits"
 	case "tamil":
-		return "tag:new tamil"
+		return "tamil hits"
 	case "telugu":
-		return "tag:new telugu"
+		return "telugu hits"
 	case "malayalam":
-		return "tag:new malayalam"
+		return "malayalam hits"
 	case "kannada":
-		return "tag:new kannada"
+		return "kannada hits"
 	case "bengali":
-		return "tag:new bengali"
+		return "bengali hits"
 	case "marathi":
-		return "tag:new marathi"
+		return "marathi hits"
 	case "gujarati":
-		return "tag:new gujarati"
+		return "gujarati hits"
 	case "urdu":
-		return "tag:new urdu"
+		return "urdu hits"
 	case "korean":
-		return "tag:new k-pop"
+		return "k-pop hits"
 	case "japanese":
-		return "tag:new j-pop"
+		return "j-pop hits"
 	case "spanish":
-		return "tag:new latin"
+		return "latin hits"
 	case "portuguese":
-		return "tag:new brazilian"
+		return "brazilian hits"
 	case "arabic":
-		return "tag:new arabic"
+		return "arabic hits"
 	case "french":
-		return "tag:new french"
+		return "french pop hits"
 	case "german":
-		return "tag:new german"
+		return "german pop hits"
 	case "turkish":
-		return "tag:new turkish"
+		return "turkish pop hits"
 	case "english":
-		return "tag:new pop"
+		return "top hits"
 	default:
-		return "tag:new " + l
+		return l + " hits"
 	}
 }
 
 func newReleaseGenreQuery(g string) string {
-	return "tag:new " + strings.ToLower(strings.TrimSpace(g))
+	genre := strings.ToLower(strings.TrimSpace(g))
+	switch genre {
+	case "sufi":
+		return "sufi hits"
+	case "ghazal":
+		return "ghazal hits"
+	case "devotional":
+		return "devotional hits"
+	case "lofi", "lo-fi":
+		return "hindi lofi"
+	case "edm":
+		return "edm hits"
+	case "hip hop", "hip-hop":
+		return "hip hop hits"
+	case "r&b", "r-b":
+		return "r&b hits"
+	case "afrobeats":
+		return "afrobeats hits"
+	case "classical":
+		return "classical hits"
+	case "indie":
+		return "indie hits"
+	case "rock":
+		return "rock classics"
+	case "pop":
+		return "pop hits"
+	default:
+		return genre + " hits"
+	}
 }
 
 func newReleaseArtistQuery(name string) string {
-	return `tag:new "` + strings.TrimSpace(name) + `"`
+	return strings.TrimSpace(name) + " hits"
 }
 
+// hydrateArtists loads artist details (image, genres) for the listener's top
+// artists. Artist data is public catalogue data, so it is cached across users.
+func (b *Builder) hydrateArtists(ctx context.Context, top []models.ArtistSummary) []models.Artist {
+	out := make([]models.Artist, len(top))
+	var wg sync.WaitGroup
+	for i, a := range top {
+		out[i] = models.Artist{ID: a.ID, Name: a.Name, URI: a.URI}
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			if id == "" {
+				return
+			}
+			full := cached(ctx, b.cache, "artist:"+id, 24*time.Hour, func() (models.Artist, error) {
+				a, err := b.src.GetArtist(ctx, id)
+				if err != nil || a == nil {
+					return models.Artist{}, err
+				}
+				return *a, nil
+			})
+			if full.ID != "" {
+				out[i] = full
+			}
+		}(i, a.ID)
+	}
+	wg.Wait()
+	return out
+}

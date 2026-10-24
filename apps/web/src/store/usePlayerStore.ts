@@ -1,8 +1,10 @@
 import { create } from "zustand";
-import { Track, Device, Lyrics } from "@/types/api";
+import { Track, Lyrics } from "@/types/api";
 import { extractDominantColor, ExtractedColors } from "@/lib/color-extractor";
 
 export type RightPanelTab = "queue" | "lyrics" | "artist" | null;
+export type RepeatMode = "off" | "track" | "context";
+export type Engine = "idle" | "preview" | "video" | "unavailable";
 
 interface PlayerState {
   currentTrack: Track | null;
@@ -13,25 +15,24 @@ interface PlayerState {
   isMuted: boolean;
   previousVolume: number;
   shuffle: boolean;
-  repeatMode: "off" | "track" | "context";
-  queue: Track[];
+  repeatMode: RepeatMode;
+  queue: Track[]; // up next
+  context: Track[]; // the list currently being played (for repeat-all)
   history: Track[];
-  
-  // UI & Panels
+  restartToken: number; // bumped to make the engine restart the current track
+  engine: Engine; // what is actually producing sound right now
+  setEngine: (e: Engine) => void;
+
   isExpanded: boolean;
   rightPanelTab: RightPanelTab;
   extractedColors: ExtractedColors;
   lyrics: Lyrics | null;
   isLoadingLyrics: boolean;
-  
-  // Devices & SDK
-  activeDevice: Device | null;
-  devices: Device[];
-  deviceId: string | null;
-  isPremiumRequired: boolean;
-  
-  // Actions
+  sleepTimerEndsAt: number | null; // epoch ms
+  sleepAfterTrack: boolean;
+
   setCurrentTrack: (track: Track | null) => Promise<void>;
+  playList: (tracks: Track[], startIndex?: number) => void;
   setIsPlaying: (playing: boolean) => void;
   setProgressMs: (progress: number) => void;
   setVolume: (volume: number) => void;
@@ -40,19 +41,28 @@ interface PlayerState {
   cycleRepeatMode: () => void;
   setQueue: (tracks: Track[]) => void;
   addToQueue: (track: Track) => void;
+  playNextInQueue: (track: Track) => void;
   removeFromQueue: (index: number) => void;
-  playNext: () => void;
+  reorderQueue: (from: number, to: number) => void;
+  clearQueue: () => void;
+  playNext: () => boolean;
   playPrevious: () => void;
   setIsExpanded: (expanded: boolean) => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   toggleRightPanelTab: (tab: RightPanelTab) => void;
   setLyrics: (lyrics: Lyrics | null) => void;
   setLoadingLyrics: (loading: boolean) => void;
-  setActiveDevice: (device: Device | null) => void;
-  setDevices: (devices: Device[]) => void;
-  setDeviceId: (id: string | null) => void;
-  setIsPremiumRequired: (required: boolean) => void;
+  setSleepTimer: (minutes: number | null, afterTrack?: boolean) => void;
 }
+
+const shuffled = <T,>(arr: T[]): T[] => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   currentTrack: null,
@@ -65,46 +75,51 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   shuffle: false,
   repeatMode: "off",
   queue: [],
+  context: [],
   history: [],
-  
+  restartToken: 0,
+  engine: "idle",
+  setEngine: (engine) => set({ engine }),
+
   isExpanded: false,
   rightPanelTab: null,
-  extractedColors: {
-    primary: "#8b5cf6",
-    glow: "rgba(139, 92, 246, 0.4)",
-    secondary: "#06b6d4",
-  },
+  extractedColors: { primary: "#8b5cf6", glow: "rgba(139, 92, 246, 0.4)", secondary: "#06b6d4" },
   lyrics: null,
   isLoadingLyrics: false,
-  
-  activeDevice: null,
-  devices: [],
-  deviceId: null,
-  isPremiumRequired: false,
+  sleepTimerEndsAt: null,
+  sleepAfterTrack: false,
 
   setCurrentTrack: async (track) => {
     if (!track) {
-      set({ currentTrack: null, durationMs: 0, progressMs: 0 });
+      set({ currentTrack: null, durationMs: 0, progressMs: 0, isPlaying: false });
       return;
     }
-
-    set({
-      currentTrack: track,
-      durationMs: track.duration_ms || 210000,
-      progressMs: 0,
-      isPlaying: true,
-    });
-
-    const albumImage = track.album?.images?.[0]?.url;
-    if (albumImage) {
-      const colors = await extractDominantColor(albumImage);
+    set({ currentTrack: track, durationMs: track.duration_ms || 30000, progressMs: 0, isPlaying: true, lyrics: null });
+    const art = track.album?.images?.[0]?.url;
+    if (art) {
+      const colors = await extractDominantColor(art);
+      if (get().currentTrack?.id !== track.id) return; // a newer track started meanwhile
       set({ extractedColors: colors });
-      // Apply CSS variable to root for theme glow
       if (typeof document !== "undefined") {
         document.documentElement.style.setProperty("--dynamic-accent", colors.primary);
         document.documentElement.style.setProperty("--dynamic-accent-soft", colors.glow);
       }
     }
+  },
+
+  // Play a list from an index; the rest becomes "up next" (shuffled when shuffle is on).
+  playList: (tracks, startIndex = 0) => {
+    if (!tracks.length) return;
+    const idx = Math.min(Math.max(startIndex, 0), tracks.length - 1);
+    const { shuffle, currentTrack, history } = get();
+    const rest = tracks.filter((_, i) => i !== idx);
+    const after = shuffle ? shuffled(rest) : [...tracks.slice(idx + 1)];
+    set({
+      context: tracks,
+      queue: after,
+      history: currentTrack ? [currentTrack, ...history].slice(0, 50) : history,
+    });
+    void get().setCurrentTrack(tracks[idx]);
   },
 
   setIsPlaying: (isPlaying) => set({ isPlaying }),
@@ -113,70 +128,72 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   toggleMute: () => {
     const { isMuted, volume, previousVolume } = get();
-    if (isMuted) {
-      set({ isMuted: false, volume: previousVolume || 75 });
-    } else {
-      set({ isMuted: true, previousVolume: volume, volume: 0 });
-    }
+    if (isMuted) set({ isMuted: false, volume: previousVolume || 75 });
+    else set({ isMuted: true, previousVolume: volume, volume: 0 });
   },
 
-  toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),
+  toggleShuffle: () => {
+    const { shuffle, queue } = get();
+    set({ shuffle: !shuffle, queue: !shuffle ? shuffled(queue) : queue });
+  },
 
   cycleRepeatMode: () => {
-    const modes: ("off" | "context" | "track")[] = ["off", "context", "track"];
-    const current = get().repeatMode;
-    const nextIndex = (modes.indexOf(current) + 1) % modes.length;
-    set({ repeatMode: modes[nextIndex] });
+    const modes: RepeatMode[] = ["off", "context", "track"];
+    set({ repeatMode: modes[(modes.indexOf(get().repeatMode) + 1) % modes.length] });
   },
 
-  setQueue: (tracks) => set({ queue: tracks }),
-  addToQueue: (track) => set((state) => ({ queue: [...state.queue, track] })),
-  removeFromQueue: (index) =>
-    set((state) => ({
-      queue: state.queue.filter((_, i) => i !== index),
-    })),
+  setQueue: (queue) => set({ queue }),
+  addToQueue: (track) => set((s) => ({ queue: [...s.queue, track] })),
+  playNextInQueue: (track) => set((s) => ({ queue: [track, ...s.queue] })),
+  removeFromQueue: (index) => set((s) => ({ queue: s.queue.filter((_, i) => i !== index) })),
+  clearQueue: () => set({ queue: [] }),
+  reorderQueue: (from, to) =>
+    set((s) => {
+      if (from === to || from < 0 || to < 0 || from >= s.queue.length || to >= s.queue.length) return s;
+      const q = [...s.queue];
+      const [moved] = q.splice(from, 1);
+      q.splice(to, 0, moved);
+      return { queue: q };
+    }),
 
+  // Returns false when there was nothing to play next (the engine may then autoplay similar music).
   playNext: () => {
-    const { queue, currentTrack, history } = get();
-    if (queue.length === 0) return;
-    const nextTrack = queue[0];
-    const newQueue = queue.slice(1);
-    if (currentTrack) {
-      set({ history: [currentTrack, ...history] });
+    const { queue, currentTrack, history, repeatMode, context } = get();
+    if (repeatMode === "track" && currentTrack) {
+      set((s) => ({ restartToken: s.restartToken + 1, progressMs: 0, isPlaying: true }));
+      return true;
     }
-    get().setCurrentTrack(nextTrack);
-    set({ queue: newQueue });
+    let upcoming = queue;
+    if (upcoming.length === 0 && repeatMode === "context" && context.length > 0) {
+      upcoming = context.filter((t) => t.id !== currentTrack?.id);
+      if (upcoming.length === 0) upcoming = context;
+    }
+    if (upcoming.length === 0) return false;
+    const next = upcoming[0];
+    set({
+      queue: upcoming.slice(1),
+      history: currentTrack ? [currentTrack, ...history].slice(0, 50) : history,
+    });
+    void get().setCurrentTrack(next);
+    return true;
   },
 
   playPrevious: () => {
     const { history, currentTrack, queue, progressMs } = get();
-    // If more than 3 seconds in, restart track
     if (progressMs > 3000 || history.length === 0) {
-      set({ progressMs: 0 });
+      set((s) => ({ progressMs: 0, restartToken: s.restartToken + 1 }));
       return;
     }
-    const prevTrack = history[0];
-    const newHistory = history.slice(1);
-    if (currentTrack) {
-      set({ queue: [currentTrack, ...queue] });
-    }
-    get().setCurrentTrack(prevTrack);
-    set({ history: newHistory });
+    const [prev, ...rest] = history;
+    set({ queue: currentTrack ? [currentTrack, ...queue] : queue, history: rest });
+    void get().setCurrentTrack(prev);
   },
 
   setIsExpanded: (isExpanded) => set({ isExpanded }),
-  
-  setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
-  
-  toggleRightPanelTab: (tab) => {
-    const current = get().rightPanelTab;
-    set({ rightPanelTab: current === tab ? null : tab });
-  },
-
+  setRightPanelTab: (rightPanelTab) => set({ rightPanelTab }),
+  toggleRightPanelTab: (tab) => set({ rightPanelTab: get().rightPanelTab === tab ? null : tab }),
   setLyrics: (lyrics) => set({ lyrics }),
   setLoadingLyrics: (isLoadingLyrics) => set({ isLoadingLyrics }),
-  setActiveDevice: (activeDevice) => set({ activeDevice }),
-  setDevices: (devices) => set({ devices }),
-  setDeviceId: (deviceId) => set({ deviceId }),
-  setIsPremiumRequired: (isPremiumRequired) => set({ isPremiumRequired }),
+  setSleepTimer: (minutes, afterTrack = false) =>
+    set({ sleepTimerEndsAt: minutes ? Date.now() + minutes * 60_000 : null, sleepAfterTrack: afterTrack }),
 }));

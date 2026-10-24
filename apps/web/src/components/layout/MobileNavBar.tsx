@@ -3,40 +3,34 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Search, Library, BarChart2 } from "lucide-react";
+import { Compass, Home, Library, Search, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const TABS = [
+  { href: "/", label: "Home", icon: Home },
+  { href: "/explore", label: "Explore", icon: Compass },
+  { href: "/search", label: "Search", icon: Search },
+  { href: "/library", label: "Library", icon: Library },
+  { href: "/settings", label: "Settings", icon: Settings },
+];
 
 export function MobileNavBar() {
   const pathname = usePathname();
-
-  const navItems = [
-    { label: "Home", href: "/", icon: Home },
-    { label: "Search", href: "/search", icon: Search },
-    { label: "Library", href: "/library", icon: Library },
-    { label: "Stats", href: "/stats", icon: BarChart2 },
-  ];
-
   return (
-    <nav className="md:hidden fixed bottom-16 left-0 right-0 z-30 px-4 py-2 pointer-events-none">
-      <div className="glass-panel border border-foreground/10 rounded-2xl flex items-center justify-around py-2 shadow-2xl backdrop-blur-xl pointer-events-auto">
-        {navItems.map((item) => {
-          const isActive = pathname === item.href;
-          const Icon = item.icon;
+    <nav aria-label="Main" className="md:hidden fixed bottom-0 inset-x-0 z-40 glass-panel border-t border-foreground/10 pb-[env(safe-area-inset-bottom)]">
+      <ul className="flex justify-around py-1.5">
+        {TABS.map(({ href, label, icon: Icon }) => {
+          const on = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex flex-col items-center gap-1 px-3 py-1 text-[11px] font-medium transition-colors",
-                isActive ? "text-cyan-600 dark:text-cyan-400 font-semibold" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Icon className="w-5 h-5" />
-              <span>{item.label}</span>
-            </Link>
+            <li key={href}>
+              <Link href={href} aria-current={on ? "page" : undefined} className={cn("flex flex-col items-center gap-0.5 px-3 py-1 text-[10px] font-medium", on ? "text-primary" : "text-muted-foreground")}>
+                <Icon className="w-5 h-5" />
+                {label}
+              </Link>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </nav>
   );
 }

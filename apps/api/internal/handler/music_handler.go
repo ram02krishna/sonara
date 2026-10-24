@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sonara/api/internal/models"
@@ -13,34 +15,39 @@ import (
 	"github.com/sonara/api/internal/service"
 )
 
-type MusicHandler struct {
-	userRepo    *repository.UserRepository
-	prefsRepo   *repository.PreferencesRepository
-	historyRepo *repository.HistoryRepository
-	libraryRepo *repository.LibraryRepository
-	authService *service.AuthService
-	provider    provider.MusicProvider
-	previews    provider.PreviewProvider
+// MusicDeps are the collaborators of MusicHandler.
+type MusicDeps struct {
+	Users       *repository.UserRepository
+	Prefs       *repository.PreferencesRepository
+	History     *repository.HistoryRepository
+	Library     *repository.LibraryRepository
+	Collection  *repository.CollectionRepository
+	Playlists   *repository.PlaylistRepository
+	Auth        *service.AuthService
+	Catalog     provider.MusicProvider
+	Previews    provider.PreviewProvider
+	YouTube     *provider.YouTubeClient
+	AuthHandler *AuthHandler
 }
 
-func NewMusicHandler(
-	userRepo *repository.UserRepository,
-	prefsRepo *repository.PreferencesRepository,
-	historyRepo *repository.HistoryRepository,
-	libraryRepo *repository.LibraryRepository,
-	authService *service.AuthService,
-	prov provider.MusicProvider,
-	previews provider.PreviewProvider,
-) *MusicHandler {
-	return &MusicHandler{
-		userRepo:    userRepo,
-		prefsRepo:   prefsRepo,
-		historyRepo: historyRepo,
-		libraryRepo: libraryRepo,
-		authService: authService,
-		provider:    prov,
-		previews:    previews,
-	}
+type MusicHandler struct {
+	MusicDeps
+	// kept as direct fields for sibling handlers
+	userRepo  *repository.UserRepository
+	prefsRepo *repository.PreferencesRepository
+	provider  provider.MusicProvider
+
+	artistMu    sync.Mutex
+	artistCache map[string]cachedArtist
+}
+
+type cachedArtist struct {
+	artist  models.Artist
+	expires time.Time
+}
+
+func NewMusicHandler(d MusicDeps) *MusicHandler {
+	return &MusicHandler{MusicDeps: d, userRepo: d.Users, prefsRepo: d.Prefs, provider: d.Catalog, artistCache: map[string]cachedArtist{}}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
@@ -55,141 +62,75 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 
 func upstreamError(w http.ResponseWriter, err error) {
 	switch provider.StatusOf(err) {
-	case http.StatusUnauthorized:
-		writeError(w, http.StatusUnauthorized, "catalog_error", "Catalog provider authentication failed.")
-	case http.StatusForbidden:
-		writeError(w, http.StatusForbidden, "catalog_forbidden", "Catalog provider access forbidden.")
+	case http.StatusUnauthorized, http.StatusForbidden:
+		writeError(w, http.StatusBadGateway, "catalog_unavailable", "The music catalogue refused the request. Check the Spotify client ID/secret and that your Spotify developer app is active.")
 	case http.StatusNotFound:
-		writeError(w, http.StatusNotFound, "not_found", "The requested music item was not found.")
+		writeError(w, http.StatusNotFound, "not_found", "That item was not found in the catalogue.")
 	case http.StatusTooManyRequests:
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "Catalog rate limit reached. Please try again shortly.")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "The catalogue is rate limiting us. Please try again shortly.")
+	case http.StatusServiceUnavailable:
+		writeError(w, http.StatusServiceUnavailable, "catalog_not_configured", err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
 	}
 }
 
-// resolveUser retrieves the current Sonara user from session cookie or Authorization header
-func (h *MusicHandler) resolveUser(r *http.Request) (*models.User, error) {
-	var sessionID string
-	if cookie, err := r.Cookie("sonara_session"); err == nil && cookie.Value != "" {
-		sessionID = cookie.Value
-	}
-	if sessionID == "" {
-		authHdr := r.Header.Get("Authorization")
-		if len(authHdr) > 7 && authHdr[:7] == "Bearer " {
-			sessionID = strings.TrimSpace(authHdr[7:])
-		}
-	}
-	if sessionID != "" {
-		user, err := h.authService.GetUserBySession(r.Context(), sessionID)
-		if err == nil && user != nil {
-			return user, nil
-		}
-	}
-
-	// Memory fallback for seamless dev experience
-	if h.userRepo != nil {
-		if defaultUser, _ := h.userRepo.GetDefaultUser(r.Context()); defaultUser != nil {
-			return defaultUser, nil
-		}
-	}
-
-	return nil, http.ErrNoCookie
-}
-
-// resolveToken returns the Spotify App Token and the Sonara user
-func (h *MusicHandler) resolveToken(r *http.Request) (string, *models.User, error) {
-	user, _ := h.resolveUser(r)
-	appToken, err := h.provider.GetAppToken(r.Context())
-	if err != nil {
-		return "", user, err
-	}
-	return appToken, user, nil
-}
-
-// requireUser ensures an active Sonara user session
-func (h *MusicHandler) requireUser(w http.ResponseWriter, r *http.Request) (string, *models.User, bool) {
-	user, err := h.resolveUser(r)
-	if err != nil || user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthenticated", "Please sign in to Sonara.")
-		return "", nil, false
-	}
-	appToken, _ := h.provider.GetAppToken(r.Context())
-	return appToken, user, true
-}
-
-func (h *MusicHandler) GetMe(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.requireUser(w, r)
-	if !ok {
+func dbError(w http.ResponseWriter, err error) {
+	if err == repository.ErrNoDatabase {
+		writeError(w, http.StatusServiceUnavailable, "database_unavailable", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeError(w, http.StatusInternalServerError, "server_error", "Something went wrong on our side.")
 }
 
-func queryLimit(r *http.Request, def int) int {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
+// resolveUser returns the signed-in Sonara user. There is no fallback account.
+func (h *MusicHandler) resolveUser(r *http.Request) *models.User {
+	id := sessionIDFromRequest(r)
+	if id == "" {
+		return nil
+	}
+	user, err := h.Auth.GetUserBySession(r.Context(), id)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+func (h *MusicHandler) requireUser(w http.ResponseWriter, r *http.Request) (*models.User, bool) {
+	user := h.resolveUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "Please sign in to Sonara.")
+		return nil, false
+	}
+	return user, true
+}
+
+// marketFor picks the catalogue region: the listener's chosen region, else their account's, else the default.
+func (h *MusicHandler) marketFor(r *http.Request, user *models.User) string {
+	if m := strings.ToUpper(r.URL.Query().Get("market")); len(m) == 2 {
+		return m
+	}
+	if user == nil {
+		return ""
+	}
+	if prefs, err := h.Prefs.Get(r.Context(), user.ID); err == nil && prefs.Country != "" {
+		return prefs.Country
+	}
+	return user.Country
+}
+
+func queryInt(r *http.Request, key string, def, max int) int {
+	v, err := strconv.Atoi(r.URL.Query().Get(key))
+	if err != nil || v <= 0 {
 		return def
 	}
-	return limit
+	if v > max {
+		return max
+	}
+	return v
 }
 
-func (h *MusicHandler) GetTopArtists(w http.ResponseWriter, r *http.Request) {
-	token, user, ok := h.requireUser(w, r)
-	if !ok {
-		return
-	}
-
-	// First try user taste preferences
-	if prefs, err := h.prefsRepo.Get(r.Context(), user.ID); err == nil && len(prefs.Artists) > 0 {
-		artists := make([]models.Artist, 0, len(prefs.Artists))
-		for _, a := range prefs.Artists {
-			artists = append(artists, models.Artist{
-				ID:   a.ID,
-				Name: a.Name,
-				URI:  a.URI,
-			})
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"items": artists})
-		return
-	}
-
-	// Catalog fallback: trending artists via catalog search
-	res, err := h.provider.Search(r.Context(), token, "genre:pop", "artist", queryLimit(r, 20), user.Country)
-	if err != nil {
-		upstreamError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": res.Artists})
-}
-
-func (h *MusicHandler) GetTopTracks(w http.ResponseWriter, r *http.Request) {
-	token, user, ok := h.requireUser(w, r)
-	if !ok {
-		return
-	}
-
-	// Search top hits from catalog
-	query := "top hits"
-	if prefs, err := h.prefsRepo.Get(r.Context(), user.ID); err == nil && len(prefs.Genres) > 0 {
-		query = "genre:" + prefs.Genres[0]
-	}
-	res, err := h.provider.Search(r.Context(), token, query, "track", queryLimit(r, 20), user.Country)
-	if err != nil {
-		upstreamError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": res.Tracks})
-}
-
-func (h *MusicHandler) GetRecentlyPlayed(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := h.requireUser(w, r)
-	if !ok {
-		return
-	}
-	// Return empty recent items (handled via Sonara play_history in stats)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": []models.PlayHistoryItem{}})
-}
+// ---------- catalogue ----------
 
 func (h *MusicHandler) Search(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -197,15 +138,8 @@ func (h *MusicHandler) Search(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, models.SearchResult{})
 		return
 	}
-	token, user, _ := h.resolveToken(r)
-	market := r.URL.Query().Get("market")
-	if market == "" && user != nil && user.Country != "" {
-		market = user.Country
-	}
-	if market == "" {
-		market = "US"
-	}
-	res, err := h.provider.Search(r.Context(), token, q, r.URL.Query().Get("type"), queryLimit(r, 10), market)
+	user := h.resolveUser(r)
+	res, err := h.Catalog.Search(r.Context(), q, r.URL.Query().Get("type"), queryInt(r, "limit", 10, 10), queryInt(r, "offset", 0, 990), h.marketFor(r, user))
 	if err != nil {
 		upstreamError(w, err)
 		return
@@ -215,12 +149,11 @@ func (h *MusicHandler) Search(w http.ResponseWriter, r *http.Request) {
 
 func (h *MusicHandler) GetPreview(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
-	url, err := h.previews.FindPreview(r.Context(), name, artist)
+	url, err := h.Previews.FindPreview(r.Context(), name, strings.TrimSpace(r.URL.Query().Get("artist")))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "preview_lookup_failed", err.Error())
 		return
@@ -228,121 +161,204 @@ func (h *MusicHandler) GetPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"preview_url": url})
 }
 
+// GetVideo resolves an embeddable YouTube video through the official Data API.
+func (h *MusicHandler) GetVideo(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireUser(w, r); !ok {
+		return
+	}
+	if !h.YouTube.Enabled() {
+		writeError(w, http.StatusNotFound, "video_not_configured", "Video playback needs a YOUTUBE_API_KEY.")
+		return
+	}
+	v, err := h.YouTube.FindVideo(r.Context(), r.URL.Query().Get("name"), r.URL.Query().Get("artist"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "video_not_found", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// GetConfig tells the UI which optional capabilities are available.
+func (h *MusicHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"catalog_configured": h.Catalog.Configured(),
+		"video_enabled":      h.YouTube.Enabled(),
+	})
+}
+
+func (h *MusicHandler) artistInfo(r *http.Request, id string) (*models.Artist, error) {
+	h.artistMu.Lock()
+	if c, ok := h.artistCache[id]; ok && time.Now().Before(c.expires) {
+		h.artistMu.Unlock()
+		a := c.artist
+		return &a, nil
+	}
+	h.artistMu.Unlock()
+	a, err := h.Catalog.GetArtist(r.Context(), id)
+	if err != nil {
+		return nil, err
+	}
+	h.artistMu.Lock()
+	if len(h.artistCache) > 2000 {
+		h.artistCache = map[string]cachedArtist{}
+	}
+	h.artistCache[id] = cachedArtist{artist: *a, expires: time.Now().Add(12 * time.Hour)}
+	h.artistMu.Unlock()
+	return a, nil
+}
+
 func (h *MusicHandler) GetArtist(w http.ResponseWriter, r *http.Request) {
-	token, user, _ := h.resolveToken(r)
-	artistID := chi.URLParam(r, "id")
-	artist, err := h.provider.GetArtist(r.Context(), token, artistID)
+	id := chi.URLParam(r, "id")
+	user := h.resolveUser(r)
+	market := h.marketFor(r, user)
+	artist, err := h.artistInfo(r, id)
 	if err != nil {
 		upstreamError(w, err)
 		return
 	}
 
-	market := "US"
-	if user != nil && user.Country != "" {
-		market = user.Country
+	// Popular tracks: three search pages in parallel, kept only if this artist is credited.
+	pages := make([][]models.Track, 3)
+	var albums []models.AlbumSummary
+	var wg sync.WaitGroup
+	for i := range pages {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if res, err := h.Catalog.Search(r.Context(), `artist:"`+artist.Name+`"`, "track", 10, i*10, market); err == nil {
+				pages[i] = res.Tracks
+			}
+		}(i)
 	}
-
-	var tracks []models.Track
-	seen := make(map[string]bool)
-
-	// 1. Fetch official artist top tracks from Spotify
-	if topTracks, terr := h.provider.GetArtistTopTracks(r.Context(), token, artistID, market); terr == nil && len(topTracks) > 0 {
-		for _, t := range topTracks {
-			if !seen[t.ID] {
-				seen[t.ID] = true
-				tracks = append(tracks, t)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		list, err := h.Catalog.GetArtistAlbums(r.Context(), id, market, 10)
+		if err != nil || len(list) == 0 {
+			if res, serr := h.Catalog.Search(r.Context(), `artist:"`+artist.Name+`"`, "album", 10, 0, market); serr == nil {
+				list = res.Albums
 			}
 		}
-	}
+		albums = list
+	}()
+	wg.Wait()
 
-	// 2. Expand with search query for the artist to load a rich, comprehensive catalogue
-	if res, serr := h.provider.Search(r.Context(), token, `artist:"`+artist.Name+`"`, "track", 50, market); serr == nil {
-		for _, t := range res.Tracks {
-			if !seen[t.ID] {
-				seen[t.ID] = true
-				tracks = append(tracks, t)
-			}
-		}
-	}
-
-	// 3. Fallback search by artist name to catch singles, collaborations, and soundtracks
-	if len(tracks) < 25 {
-		if res, serr := h.provider.Search(r.Context(), token, artist.Name, "track", 50, market); serr == nil {
-			for _, t := range res.Tracks {
-				for _, a := range t.Artists {
-					if strings.EqualFold(a.Name, artist.Name) && !seen[t.ID] {
-						seen[t.ID] = true
-						tracks = append(tracks, t)
-						break
-					}
+	tracks := []models.Track{}
+	seen := map[string]bool{}
+	for _, page := range pages {
+		for _, t := range page {
+			credited := false
+			for _, a := range t.Artists {
+				if a.ID == id {
+					credited = true
 				}
 			}
+			if credited && !seen[t.ID] {
+				seen[t.ID] = true
+				tracks = append(tracks, t)
+			}
 		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{"artist": artist, "tracks": tracks})
+	following := false
+	if user != nil {
+		following, _ = h.Collection.Has(r.Context(), user.ID, "artist", id)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"artist": artist, "tracks": tracks, "albums": albums, "following": following})
 }
 
-func (h *MusicHandler) GetPlaylist(w http.ResponseWriter, r *http.Request) {
-	token, _, _ := h.resolveToken(r)
-	playlistID := chi.URLParam(r, "id")
-	pl, tracks, err := h.provider.GetPlaylist(r.Context(), token, playlistID)
+func (h *MusicHandler) GetAlbum(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	user := h.resolveUser(r)
+	album, err := h.Catalog.GetAlbum(r.Context(), id, h.marketFor(r, user))
 	if err != nil {
 		upstreamError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"playlist": pl, "tracks": tracks})
+	saved := false
+	if user != nil {
+		saved, _ = h.Collection.Has(r.Context(), user.ID, "album", id)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"album": album, "saved": saved})
 }
 
-func (h *MusicHandler) GetMyPlaylists(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := h.requireUser(w, r)
+// ---------- listening history (what Sonara knows about you) ----------
+
+func (h *MusicHandler) GetRecentlyPlayed(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
 	if !ok {
 		return
 	}
-	// Return user's Sonara playlists
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": []models.PlaylistSummary{}})
+	items, err := h.History.Recent(r.Context(), user.ID, queryInt(r, "limit", 30, 100))
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
 }
+
+func (h *MusicHandler) GetTopTracks(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.History.TopTracks(r.Context(), user.ID, r.URL.Query().Get("range"), queryInt(r, "limit", 20, 50))
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+}
+
+func (h *MusicHandler) GetTopArtists(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	top, err := h.History.TopArtists(r.Context(), user.ID, r.URL.Query().Get("range"), queryInt(r, "limit", 20, 30))
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	artists := make([]models.Artist, len(top))
+	var wg sync.WaitGroup
+	for i, a := range top {
+		artists[i] = models.Artist{ID: a.ID, Name: a.Name, Genres: []string{}, Images: []models.Image{}}
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			if full, err := h.artistInfo(r, id); err == nil {
+				artists[i] = *full
+			}
+		}(i, a.ID)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": artists})
+}
+
+// ---------- liked songs ----------
 
 func (h *MusicHandler) SaveTrack(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.requireUser(w, r)
+	user, ok := h.requireUser(w, r)
 	if !ok {
 		return
 	}
-	uri := strings.TrimSpace(r.URL.Query().Get("uri"))
-	if uri == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
+	var track models.Track
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&track); err != nil || track.ID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "A track is required.")
 		return
 	}
-
-	var track models.Track
-	_ = json.NewDecoder(r.Body).Decode(&track)
-	track.URI = uri
-	if track.ID == "" {
-		track.ID = strings.TrimPrefix(uri, "spotify:track:")
+	if track.URI == "" {
+		track.URI = "spotify:track:" + track.ID
 	}
-
-	// Auto-populate track details if body was minimal or empty
-	if track.Name == "" {
-		token, _ := h.provider.GetAppToken(r.Context())
-		trackID := strings.TrimPrefix(track.ID, "spotify:track:")
-		if enriched, err := h.provider.GetTrack(r.Context(), token, trackID); err == nil && enriched != nil && enriched.Name != "" {
-			track = *enriched
-			track.URI = uri
-		} else if res, err := h.provider.Search(r.Context(), token, track.ID, "track", 1, "US"); err == nil && len(res.Tracks) > 0 {
-			track = res.Tracks[0]
-			track.URI = uri
-		}
-	}
-
-	if err := h.libraryRepo.SaveTrack(r.Context(), user.ID, track); err != nil {
-		writeError(w, http.StatusInternalServerError, "save_failed", err.Error())
+	if err := h.Library.SaveTrack(r.Context(), user.ID, track); err != nil {
+		dbError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
 }
 
 func (h *MusicHandler) RemoveTrack(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.requireUser(w, r)
+	user, ok := h.requireUser(w, r)
 	if !ok {
 		return
 	}
@@ -351,106 +367,95 @@ func (h *MusicHandler) RemoveTrack(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
 		return
 	}
-	if err := h.libraryRepo.RemoveTrack(r.Context(), user.ID, uri); err != nil {
-		writeError(w, http.StatusInternalServerError, "remove_failed", err.Error())
+	if err := h.Library.RemoveTrack(r.Context(), user.ID, uri); err != nil {
+		dbError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"saved": false})
 }
 
 func (h *MusicHandler) TrackSaved(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.requireUser(w, r)
+	user, ok := h.requireUser(w, r)
 	if !ok {
 		return
 	}
-	uri := strings.TrimSpace(r.URL.Query().Get("uri"))
-	if uri == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
-		return
-	}
-	saved, err := h.libraryRepo.IsTrackSaved(r.Context(), user.ID, uri)
+	saved, err := h.Library.IsTrackSaved(r.Context(), user.ID, strings.TrimSpace(r.URL.Query().Get("uri")))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "check_failed", err.Error())
+		dbError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"saved": saved})
 }
 
 func (h *MusicHandler) GetSavedTracks(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.requireUser(w, r)
+	user, ok := h.requireUser(w, r)
 	if !ok {
 		return
 	}
-	tracks, err := h.libraryRepo.GetSavedTracks(r.Context(), user.ID, queryLimit(r, 50))
+	tracks, err := h.Library.GetSavedTracks(r.Context(), user.ID, queryInt(r, "limit", 500, 1000))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		dbError(w, err)
 		return
 	}
-
-	// Auto-enrich any existing tracks that have blank or missing metadata
-	token, _ := h.provider.GetAppToken(r.Context())
-	for i := range tracks {
-		if tracks[i].Name == "" && tracks[i].ID != "" {
-			trackID := strings.TrimPrefix(tracks[i].ID, "spotify:track:")
-			if enriched, err := h.provider.GetTrack(r.Context(), token, trackID); err == nil && enriched != nil && enriched.Name != "" {
-				tracks[i] = *enriched
-				tracks[i].IsLiked = true
-				_ = h.libraryRepo.SaveTrack(r.Context(), user.ID, tracks[i])
-			}
-		}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": tracks})
 }
 
-func (h *MusicHandler) GetPlayerToken(w http.ResponseWriter, r *http.Request) {
-	token, _, ok := h.requireUser(w, r)
-	if !ok {
-		return
+// ---------- following artists & saved albums ----------
+
+func (h *MusicHandler) addToCollection(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := h.requireUser(w, r)
+		if !ok {
+			return
+		}
+		id := chi.URLParam(r, "id")
+		var item map[string]interface{}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&item); err != nil || item == nil {
+			item = map[string]interface{}{}
+		}
+		item["id"] = id
+		if err := h.Collection.Add(r.Context(), user.ID, kind, id, item); err != nil {
+			dbError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]string{"access_token": token})
 }
 
-// Playback controls (HTML5 player handles streaming in the browser; endpoints return 204)
-func (h *MusicHandler) GetPlaybackState(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+func (h *MusicHandler) removeFromCollection(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := h.requireUser(w, r)
+		if !ok {
+			return
+		}
+		if err := h.Collection.Remove(r.Context(), user.ID, kind, chi.URLParam(r, "id")); err != nil {
+			dbError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"saved": false})
+	}
 }
 
-func (h *MusicHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"devices": []map[string]interface{}{
-			{
-				"id":         "sonara-web-device",
-				"name":       "Sonara Studio Engine",
-				"type":       "Computer",
-				"is_active":  true,
-				"volume_percent": 100,
-			},
-		},
-	})
+func (h *MusicHandler) listCollection(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := h.requireUser(w, r)
+		if !ok {
+			return
+		}
+		items, err := h.Collection.List(r.Context(), user.ID, kind, 100)
+		if err != nil {
+			dbError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+	}
 }
 
-func (h *MusicHandler) Play(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *MusicHandler) Pause(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *MusicHandler) Next(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *MusicHandler) Previous(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *MusicHandler) Seek(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *MusicHandler) SetVolume(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+func (h *MusicHandler) FollowArtist() http.HandlerFunc   { return h.addToCollection("artist") }
+func (h *MusicHandler) UnfollowArtist() http.HandlerFunc { return h.removeFromCollection("artist") }
+func (h *MusicHandler) ListFollowing() http.HandlerFunc  { return h.listCollection("artist") }
+func (h *MusicHandler) SaveAlbum() http.HandlerFunc      { return h.addToCollection("album") }
+func (h *MusicHandler) UnsaveAlbum() http.HandlerFunc    { return h.removeFromCollection("album") }
+func (h *MusicHandler) ListSavedAlbums() http.HandlerFunc {
+	return h.listCollection("album")
 }

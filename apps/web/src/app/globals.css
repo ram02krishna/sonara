@@ -199,3 +199,67 @@ button,
     scroll-behavior: auto !important;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Accent themes: the whole UI follows --primary / --primary-2.       */
+/* ------------------------------------------------------------------ */
+:root {
+  --primary-2: 187 94% 43%; /* gradient partner (cyan) */
+  --row-py: 0.625rem;
+}
+[data-density="compact"] {
+  --row-py: 0.3rem;
+}
+[data-accent="blue"] { --primary: 217 91% 60%; --accent: 217 91% 60%; --ring: 217 91% 60%; --primary-2: 187 94% 43%; }
+[data-accent="violet"] { --primary: 263 90% 66%; --accent: 263 90% 66%; --ring: 263 90% 66%; --primary-2: 292 84% 61%; }
+[data-accent="rose"] { --primary: 347 90% 61%; --accent: 347 90% 61%; --ring: 347 90% 61%; --primary-2: 25 95% 55%; }
+[data-accent="emerald"] { --primary: 160 84% 39%; --accent: 160 84% 39%; --ring: 160 84% 39%; --primary-2: 187 94% 43%; }
+[data-accent="amber"] { --primary: 38 92% 50%; --accent: 38 92% 50%; --ring: 38 92% 50%; --primary-2: 14 90% 55%; }
+/* light theme keeps accents readable on white */
+[data-theme="light"][data-accent="blue"] { --primary: 217 91% 52%; --accent: 217 91% 45%; --ring: 217 91% 52%; }
+[data-theme="light"][data-accent="violet"] { --primary: 263 80% 55%; --accent: 263 80% 50%; --ring: 263 80% 55%; }
+[data-theme="light"][data-accent="rose"] { --primary: 347 82% 52%; --accent: 347 82% 48%; --ring: 347 82% 52%; }
+[data-theme="light"][data-accent="emerald"] { --primary: 160 84% 32%; --accent: 160 84% 28%; --ring: 160 84% 32%; }
+[data-theme="light"][data-accent="amber"] { --primary: 32 95% 44%; --accent: 32 95% 40%; --ring: 32 95% 44%; }
+
+.bg-brand { background-image: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary-2))); color: #fff; }
+.text-brand { color: hsl(var(--primary)); }
+.shadow-brand { box-shadow: 0 10px 30px -10px hsl(var(--primary) / 0.55); }
+.text-gradient-brand {
+  background-image: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--primary-2)));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Interactive cards lift on hover */
+.card-lift { transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s, border-color 0.2s; }
+.card-lift:hover { transform: translateY(-3px); background: var(--glass-card-hover); border-color: var(--glass-card-border-hover); }
+
+/* Fade the edges of horizontal shelves */
+.shelf-fade { mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 28px), transparent 100%); }
+
+.line-clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Equalizer bars shown next to the playing track */
+@keyframes eq { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+.eq-bar { width: 3px; height: 14px; border-radius: 2px; background: hsl(var(--primary)); transform-origin: bottom; animation: eq 0.9s ease-in-out infinite; }
+.eq-bar:nth-child(2) { animation-delay: 0.2s; }
+.eq-bar:nth-child(3) { animation-delay: 0.4s; }
+.eq-paused .eq-bar { animation-play-state: paused; transform: scaleY(0.35); }
+
+@keyframes pop-in { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: none; } }
+.pop-in { animation: pop-in 0.14s ease-out; }
+
+[data-motion="reduce"] *, [data-motion="reduce"] ::before, [data-motion="reduce"] ::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important;
+}
+
+/* Range sliders (seek + volume): accessible native inputs, themed track */
+.sonara-range {
+  -webkit-appearance: none; appearance: none; height: 4px; border-radius: 9999px; cursor: pointer; outline-offset: 6px;
+  background: linear-gradient(to right, hsl(var(--foreground)) var(--pct, 0%), hsl(var(--foreground) / 0.18) var(--pct, 0%));
+}
+.sonara-range:hover { background: linear-gradient(to right, hsl(var(--primary)) var(--pct, 0%), hsl(var(--foreground) / 0.18) var(--pct, 0%)); }
+.sonara-range::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 9999px; background: hsl(var(--foreground)); opacity: 0; transition: opacity .15s; }
+.sonara-range:hover::-webkit-slider-thumb, .sonara-range:focus-visible::-webkit-slider-thumb { opacity: 1; }
+.sonara-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 9999px; background: hsl(var(--foreground)); }

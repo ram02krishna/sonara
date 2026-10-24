@@ -21,6 +21,7 @@ import { usePlayerStore } from "@/store/usePlayerStore";
 import { useAppStore } from "@/store/useAppStore";
 import { cn, formatDuration } from "@/lib/utils";
 import { useTrackLiked, friendlyError } from "@/hooks/useSonara";
+import { playback } from "@/lib/playback";
 
 export function FullScreenPlayer() {
   const {
@@ -46,7 +47,8 @@ export function FullScreenPlayer() {
     lyrics,
   } = usePlayerStore();
 
-  const { addToast, audioQuality, theme } = useAppStore();
+  const { addToast, theme } = useAppStore();
+  const engine = usePlayerStore((st) => st.engine);
   const isLight = theme === "light";
   const [showLyricsMode, setShowLyricsMode] = useState(false);
   const { liked: isLiked, toggle: toggleLike } = useTrackLiked(currentTrack);
@@ -128,31 +130,27 @@ export function FullScreenPlayer() {
                 <span
                   className={cn(
                     "w-0.5 rounded-full transition-all",
-                    isLight ? "bg-blue-600" : "bg-cyan-400",
+                    "bg-primary",
                     isPlaying ? "h-3 animate-pulse" : "h-1.5"
                   )}
                 />
                 <span
                   className={cn(
                     "w-0.5 rounded-full transition-all",
-                    isLight ? "bg-blue-600" : "bg-cyan-400",
+                    "bg-primary",
                     isPlaying ? "h-2 animate-pulse delay-75" : "h-1"
                   )}
                 />
                 <span
                   className={cn(
                     "w-0.5 rounded-full transition-all",
-                    isLight ? "bg-blue-600" : "bg-cyan-400",
+                    "bg-primary",
                     isPlaying ? "h-2.5 animate-pulse delay-150" : "h-2"
                   )}
                 />
               </div>
               <span>
-                {audioQuality === "lossless"
-                  ? "Hi-Res Lossless 24-bit • Studio Master"
-                  : audioQuality === "high"
-                  ? "High Fidelity • 320 kbps"
-                  : "Standard AAC • 160 kbps"}
+                {engine === "video" ? "Full song • YouTube" : engine === "preview" ? "30-second preview" : "Now playing"}
               </span>
             </div>
             <button
@@ -257,6 +255,15 @@ export function FullScreenPlayer() {
                       </p>
                     );
                   })
+                ) : lyrics?.plain_lyrics ? (
+                  <div
+                    className={cn(
+                      "whitespace-pre-line text-lg leading-relaxed font-medium transition-colors",
+                      isLight ? "text-slate-700" : "text-white/80"
+                    )}
+                  >
+                    {lyrics.plain_lyrics}
+                  </div>
                 ) : (
                   <p
                     className={cn(
@@ -307,15 +314,15 @@ export function FullScreenPlayer() {
                       Released
                     </span>
                     <span className={cn("font-semibold", isLight ? "text-slate-900" : "text-white/90")}>
-                      {currentTrack.album?.release_date || "2026"}
+                      {currentTrack.album?.release_date || "—"}
                     </span>
                   </div>
                   <div>
                     <span className={cn("block", isLight ? "text-slate-500" : "text-white/50")}>
-                      Popularity
+                      Length
                     </span>
                     <span className={cn("font-semibold", isLight ? "text-slate-900" : "text-white/90")}>
-                      {currentTrack.popularity || 88} / 100
+                      {currentTrack.duration_ms ? formatDuration(currentTrack.duration_ms) : "—"}
                     </span>
                   </div>
                   <div>
@@ -323,11 +330,7 @@ export function FullScreenPlayer() {
                       Audio Engine
                     </span>
                     <span className={cn("font-semibold", isLight ? "text-blue-600" : "text-cyan-400")}>
-                      {audioQuality === "lossless"
-                        ? "FLAC / 24-bit Lossless"
-                        : audioQuality === "high"
-                        ? "High-Fi 320k"
-                        : "AAC 160k"}
+                      {engine === "video" ? "Full song (video)" : engine === "preview" ? "30-second preview" : "—"}
                     </span>
                   </div>
                   <div>
@@ -357,7 +360,7 @@ export function FullScreenPlayer() {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
                 const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-                setProgressMs(Math.round(ratio * durationMs));
+                playback.seek(Math.round(ratio * durationMs));
               }}
             >
               <div
@@ -365,14 +368,14 @@ export function FullScreenPlayer() {
                   "h-full rounded-full relative transition-all",
                   isLight
                     ? "bg-gradient-to-r from-blue-600 to-indigo-600"
-                    : "bg-gradient-to-r from-violet-400 to-cyan-400"
+                    : "bg-gradient-to-r from-primary to-accent"
                 )}
                 style={{ width: `${progressPercent}%` }}
               >
                 <div
                   className={cn(
                     "absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full shadow-md",
-                    isLight ? "bg-blue-600 ring-2 ring-white" : "bg-white shadow-lg"
+                    "bg-white shadow-lg"
                   )}
                 />
               </div>
@@ -457,7 +460,7 @@ export function FullScreenPlayer() {
                 className={cn(
                   "w-16 h-16 rounded-full flex items-center justify-center shadow-2xl hover:scale-105 active:scale-95 transition-all",
                   isLight
-                    ? "bg-blue-600 text-white shadow-blue-600/30 hover:bg-blue-500"
+                    ? "bg-primary text-white shadow-lg hover:opacity-90"
                     : "bg-white text-black shadow-white/10"
                 )}
               >

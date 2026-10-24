@@ -19,6 +19,7 @@ import {
 import { useAppStore } from "@/store/useAppStore";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { useSearch } from "@/hooks/useSonara";
+import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/utils";
 
 export function CommandPalette() {
@@ -38,10 +39,6 @@ export function CommandPalette() {
   // Global keyboard shortcut Cmd+K or Ctrl+K
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setCommandPaletteOpen(!commandPaletteOpen);
-      }
       if (e.key === "Escape" && commandPaletteOpen) {
         setCommandPaletteOpen(false);
       }
@@ -71,6 +68,34 @@ export function CommandPalette() {
       run: () => router.push("/library"),
     },
     {
+      id: "nav-explore",
+      title: "Explore by language & mood",
+      icon: Music,
+      category: "Navigation",
+      run: () => router.push("/explore"),
+    },
+    {
+      id: "nav-settings",
+      title: "Open Settings",
+      icon: Music,
+      category: "Navigation",
+      run: () => router.push("/settings"),
+    },
+    {
+      id: "action-newplaylist",
+      title: "Create a new playlist",
+      icon: Library,
+      category: "Library",
+      run: () => useUiStore.getState().openCreatePlaylist(),
+    },
+    {
+      id: "action-theme",
+      title: "Toggle light / dark theme",
+      icon: Headphones,
+      category: "Appearance",
+      run: () => useAppStore.getState().toggleTheme(),
+    },
+    {
       id: "nav-stats",
       title: "View Listening Stats",
       icon: BarChart2,
@@ -93,21 +118,21 @@ export function CommandPalette() {
     },
     {
       id: "mood-focus",
-      title: "Activate Focus Audio",
+      title: "Focus colours",
       icon: Headphones,
       category: "Audio Modes",
       run: () => setMood("focus"),
     },
     {
       id: "mood-workout",
-      title: "Activate Workout Mood",
+      title: "Workout colours",
       icon: Zap,
       category: "Moods",
       run: () => setMood("workout"),
     },
     {
       id: "mood-latenight",
-      title: "Activate Late Night Mood",
+      title: "Late night colours",
       icon: Moon,
       category: "Moods",
       run: () => setMood("latenight"),

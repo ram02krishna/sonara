@@ -20,7 +20,7 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
       className={cn(
         "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium border transition-all",
         active
-          ? "bg-blue-600 hover:bg-blue-500 text-white border-blue-500 shadow-md shadow-blue-600/25 font-semibold"
+          ? "bg-brand border-transparent shadow-md shadow-brand font-semibold"
           : "glass-pill text-foreground hover:bg-foreground/10"
       )}
     >
@@ -141,7 +141,7 @@ export default function OnboardingPage() {
         {artists.length > 0 && (
           <div className="flex flex-wrap gap-2 pt-1">
             {artists.map((a) => (
-              <span key={a.id || a.name} className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/20 text-sm font-medium">
+              <span key={a.id || a.name} className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-full bg-primary/15 text-foreground dark:text-blue-400 border border-blue-500/20 text-sm font-medium">
                 {a.name}
                 <button aria-label={`Remove ${a.name}`} onClick={() => setArtists(artists.filter((x) => x.name !== a.name))} className="p-0.5 rounded-full hover:bg-blue-500/20">
                   <X className="w-3.5 h-3.5" />
@@ -189,7 +189,7 @@ export default function OnboardingPage() {
           <button
             onClick={onSave}
             disabled={!canSave || save.isPending}
-            className="px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold text-sm shadow-md shadow-blue-600/25 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98] transition-all inline-flex items-center gap-2"
+            className="px-6 py-2.5 rounded-full bg-brand font-semibold text-sm shadow-md shadow-blue-600/25 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98] transition-all inline-flex items-center gap-2"
           >
             {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
             <span>Build my home</span>

@@ -82,23 +82,20 @@ export interface UserProfile {
   email: string;
   avatar_url?: string;
   bio?: string;
-  product?: string; // 'premium' for Studio Master access
+  product?: string; // legacy field, unused
   country?: string;
 }
 
 export interface SessionResponse {
   authenticated: boolean;
   user?: UserProfile | null;
-  is_premium?: boolean;
-  token?: string;
-  session_id?: string;
+  guest?: boolean;
 }
 
 export interface AuthResponse {
   authenticated: boolean;
+  guest?: boolean;
   user: UserProfile;
-  token?: string;
-  session_id?: string;
 }
 
 export interface LoginPayload {
@@ -188,4 +185,42 @@ export interface Preferences {
   artists: ArtistSummary[];
   country?: string;
   onboarded: boolean;
+}
+
+/** A playlist created by a Sonara user. */
+export interface UserPlaylist {
+  id: string;
+  name: string;
+  description: string;
+  track_count: number;
+  covers: string[];
+  tracks?: Track[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlbumDetail {
+  album: AlbumSummary;
+  artists: ArtistSummary[];
+  label?: string;
+  total_tracks: number;
+  tracks: Track[];
+}
+
+export interface BrowseCategory {
+  slug: string;
+  title: string;
+  group: "language" | "genre" | "mood";
+  color: string;
+}
+
+export interface AppConfig {
+  catalog_configured: boolean;
+  video_enabled: boolean;
+}
+
+export interface Video {
+  video_id: string;
+  title: string;
+  channel: string;
 }

@@ -1,498 +1,206 @@
 "use client";
 
-import React, { useState } from "react";
-import Link from "next/link";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Check, Download, Keyboard, Loader2, LogOut, Monitor, Moon, Palette, PlayCircle, ShieldCheck, Sun, Trash2, User, Globe, Sparkles } from "lucide-react";
+import { ACCENTS, Accent, Density, ThemePref, useAppStore } from "@/store/useAppStore";
+import { usePlayerStore } from "@/store/usePlayerStore";
 import {
-  Sliders,
-  Sun,
-  Moon,
-  Music2,
-  CheckCircle2,
-  LogOut,
-  Palette,
-  ShieldCheck,
-  Radio,
-  Layers,
-  Trash2,
-  Cpu,
-  Sparkles,
-  Volume2,
-} from "lucide-react";
-import { useAppStore } from "@/store/useAppStore";
-import { useLogout } from "@/hooks/useSonara";
+  friendlyError, useAppConfig, useChangePassword, useClearHistory, useDeleteAccount, useLogout, usePreferences, useSavePreferences, useUpdateProfile, useUpgradeGuest,
+} from "@/hooks/useSonara";
+import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/lib/api-client";
 
-type SettingsTab = "audio" | "appearance" | "account";
+const field = "w-full px-4 py-2.5 rounded-xl bg-foreground/5 border border-foreground/10 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20";
+const COUNTRIES: [string, string][] = [["IN", "India"], ["US", "United States"], ["GB", "United Kingdom"], ["CA", "Canada"], ["AU", "Australia"], ["DE", "Germany"], ["FR", "France"], ["ES", "Spain"], ["BR", "Brazil"], ["MX", "Mexico"], ["JP", "Japan"], ["KR", "South Korea"], ["AE", "United Arab Emirates"], ["ID", "Indonesia"], ["NG", "Nigeria"], ["ZA", "South Africa"]];
+
+function Card({ id, icon: Icon, title, desc, children }: { id: string; icon: React.ElementType; title: string; desc?: string; children: React.ReactNode }) {
+  return (
+    <section id={id} className="glass-card rounded-3xl p-6 space-y-5 scroll-mt-24">
+      <header className="flex items-start gap-3">
+        <span className="w-10 h-10 rounded-xl bg-primary/15 text-primary flex items-center justify-center shrink-0"><Icon className="w-5 h-5" /></span>
+        <div><h2 className="text-lg font-bold tracking-tight">{title}</h2>{desc && <p className="text-sm text-muted-foreground">{desc}</p>}</div>
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0"><p className="text-sm font-medium">{label}</p>{hint && <p className="text-xs text-muted-foreground">{hint}</p>}</div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)} className={cn("relative w-11 h-6 rounded-full transition-colors disabled:opacity-40", checked ? "bg-primary" : "bg-foreground/20")}>
+      <span className={cn("absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform", checked && "translate-x-5")} />
+    </button>
+  );
+}
 
 export default function SettingsPage() {
   const router = useRouter();
-  const {
-    theme,
-    toggleTheme,
-    user,
-    isAuthenticated,
-    addToast,
-    audioQuality,
-    setAudioQuality,
-    normalizeAudio,
-    setNormalizeAudio,
-    crossfadeSeconds,
-    setCrossfadeSeconds,
-  } = useAppStore();
-  const logoutMutation = useLogout();
-  const [activeTab, setActiveTab] = useState<SettingsTab>("audio");
-  const [isSaving, setIsSaving] = useState(false);
+  const { settings, updateSettings, resetSettings, user, isGuest, addToast, setShortcutsOpen } = useAppStore();
+  const openConfirm = useUiStore((s) => s.openConfirm);
+  const { data: config } = useAppConfig();
+  const { data: prefs } = usePreferences();
+  const savePrefs = useSavePreferences();
+  const updateProfile = useUpdateProfile();
+  const changePassword = useChangePassword();
+  const upgrade = useUpgradeGuest();
+  const clearHistory = useClearHistory();
+  const deleteAccount = useDeleteAccount();
+  const logout = useLogout();
 
-  const handleQualityChange = async (quality: "lossless" | "high" | "normal") => {
-    setAudioQuality(quality);
-    if (isAuthenticated) {
-      setIsSaving(true);
-      try {
-        await apiFetch("/me/preferences", {
-          method: "PUT",
-          body: JSON.stringify({ audio_quality: quality }),
-        });
-        addToast({
-          title: "Audio Quality Updated",
-          description:
-            quality === "lossless"
-              ? "Lossless Studio (24-bit / 96 kHz Master FLAC) activated."
-              : quality === "high"
-              ? "High Fidelity (320 kbps) activated."
-              : "Standard AAC (160 kbps) bandwidth-efficient mode active.",
-          type: "success",
-        });
-      } catch {
-        addToast({
-          title: "Saved Locally",
-          description: "Quality preference updated in current session.",
-          type: "info",
-        });
-      } finally {
-        setIsSaving(false);
-      }
-    } else {
-      addToast({
-        title: "Quality Preference Updated",
-        description: `Set to ${quality === "lossless" ? "Lossless Master" : quality === "high" ? "High-Fi 320k" : "Standard AAC"}.`,
-        type: "success",
-      });
-    }
-  };
+  const [name, setName] = useState(user?.display_name ?? "");
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [email, setEmail] = useState("");
+  const [guestPw, setGuestPw] = useState("");
+  useEffect(() => setName(user?.display_name ?? ""), [user?.display_name]);
 
-  const handleNormalizeToggle = async () => {
-    const next = !normalizeAudio;
-    setNormalizeAudio(next);
-    if (isAuthenticated) {
-      try {
-        await apiFetch("/me/preferences", {
-          method: "PUT",
-          body: JSON.stringify({ normalize_audio: next }),
-        });
-      } catch {
-        // ignore
-      }
-    }
-    addToast({
-      title: next ? "Audio Normalization Enabled" : "Audio Normalization Disabled",
-      description: next
-        ? "Volumes balanced dynamically across all studio masters."
-        : "Raw track dynamic range preserved without adjustment.",
-      type: "info",
-    });
-  };
+  const ok = (title: string) => addToast({ title, type: "success", duration: 2200 });
+  const fail = (title: string) => (e: unknown) => addToast({ title, description: friendlyError(e).detail, type: "error" });
 
-  const handleClearCache = () => {
-    if (typeof window !== "undefined") {
-      try {
-        // Clear cached search or album items while keeping tokens
-        const keys = Object.keys(localStorage).filter(
-          (k) => k.startsWith("sonara-cache") || k.startsWith("react-query")
-        );
-        keys.forEach((k) => localStorage.removeItem(k));
-      } catch {
-        // ignore
-      }
-    }
-    addToast({
-      title: "Audio & Artwork Cache Cleared",
-      description: "Freed local storage cache. All assets will reload cleanly.",
-      type: "success",
-    });
-  };
+  const themes: { id: ThemePref; label: string; icon: React.ElementType }[] = [
+    { id: "system", label: "System", icon: Monitor }, { id: "dark", label: "Dark", icon: Moon }, { id: "light", label: "Light", icon: Sun },
+  ];
+  const region = prefs?.country || user?.country || "";
 
-  const handleLogout = async () => {
-    try {
-      await logoutMutation.mutateAsync();
-      addToast({ title: "Signed out of Sonara", type: "info" });
-      router.push("/login");
-    } catch {
-      router.push("/login");
-    }
-  };
+  const nav = [["account", "Account"], ["appearance", "Appearance"], ["playback", "Playback"], ["taste", "Taste & region"], ["privacy", "Privacy & data"]];
 
   return (
-    <div className="p-4 md:p-8 space-y-8 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight flex items-center gap-3">
-            <span>Preferences & Settings</span>
-            {isSaving && (
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-500 border border-cyan-500/20 font-normal">
-                Syncing...
-              </span>
-            )}
-          </h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            Configure lossless streaming quality, user taste profiles, and aesthetic visual preferences.
-          </p>
-        </div>
+    <div className="p-4 md:p-8 max-w-5xl mx-auto">
+      <header className="mb-6">
+        <h1 className="text-3xl font-extrabold tracking-tight">Settings</h1>
+        <p className="text-sm text-muted-foreground mt-1">Make Sonara yours.</p>
+      </header>
 
-        {/* Tab Switcher */}
-        <div className="flex items-center gap-1.5 p-1 rounded-2xl glass-panel self-start sm:self-auto">
-          {[
-            { id: "audio", label: "Audio & Streaming", icon: Sliders },
-            { id: "appearance", label: "Appearance", icon: Palette },
-            { id: "account", label: "Account & Cloud", icon: ShieldCheck },
-          ].map((t) => {
-            const Icon = t.icon;
-            const active = activeTab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setActiveTab(t.id as SettingsTab)}
-                className={cn(
-                  "flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all",
-                  active
-                    ? "bg-foreground text-background shadow-md font-bold"
-                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                )}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{t.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <div className="grid md:grid-cols-[11rem_minmax(0,1fr)] gap-8">
+        <nav aria-label="Settings sections" className="hidden md:block sticky top-20 self-start space-y-1">
+          {nav.map(([id, label]) => <a key={id} href={`#${id}`} className="block px-3 py-2 rounded-xl text-sm text-muted-foreground hover:text-foreground hover:bg-foreground/5">{label}</a>)}
+        </nav>
 
-      {/* Tab 1: Audio & Streaming */}
-      {activeTab === "audio" && (
         <div className="space-y-6">
-          {/* Quality Selector */}
-          <div className="glass-card rounded-3xl p-6 md:p-8 space-y-5 border border-foreground/5 shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-cyan-500" />
-                  <span>Streaming Audio Quality</span>
-                </h2>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Select your desired audio bitrate. Sonara dynamically configures playback resolution in real time.
-                </p>
-              </div>
-
-              <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-semibold">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Engine Active</span>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[
-                {
-                  id: "lossless",
-                  title: "Lossless Studio",
-                  badge: "24-bit / 96 kHz",
-                  desc: "Studio master fidelity with pristine acoustic separation and FLAC uncompressed depth.",
-                  tone: "border-cyan-400/50 bg-cyan-500/10 shadow-cyan-500/10",
-                },
-                {
-                  id: "high",
-                  title: "High Fidelity",
-                  badge: "320 kbps",
-                  desc: "High bit-rate streaming with rich harmonics, ideal for audiophile headphones.",
-                  tone: "border-blue-400/50 bg-blue-500/10 shadow-blue-500/10",
-                },
-                {
-                  id: "normal",
-                  title: "Standard Audio",
-                  badge: "160 kbps",
-                  desc: "Efficient AAC compression designed for lower cellular bandwidth consumption.",
-                  tone: "border-slate-400/50 bg-slate-500/10 shadow-slate-500/10",
-                },
-              ].map((q) => {
-                const isSelected = audioQuality === q.id;
-                return (
-                  <div
-                    key={q.id}
-                    onClick={() => handleQualityChange(q.id as any)}
-                    className={cn(
-                      "relative p-5 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between group",
-                      isSelected
-                        ? cn("shadow-xl", q.tone)
-                        : "bg-foreground/[0.03] border-foreground/5 hover:bg-foreground/[0.06] hover:border-foreground/20"
-                    )}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-foreground/10 text-foreground">
-                          {q.badge}
-                        </span>
-                        {isSelected && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-                      </div>
-                      <h3 className="text-base font-bold text-foreground">{q.title}</h3>
-                      <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{q.desc}</p>
-                    </div>
-
-                    <div className="pt-4 mt-2 border-t border-foreground/5 flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
-                      <span>{isSelected ? "Currently Active" : "Click to Activate"}</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-foreground/30 group-hover:bg-cyan-400" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Audio Processing Toggles */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Volume Normalization */}
-            <div className="glass-card rounded-3xl p-6 space-y-3 border border-foreground/5 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Volume2 className="w-5 h-5 text-primary" />
-                    <h3 className="text-sm font-bold text-foreground">Audio Normalization</h3>
-                  </div>
-                  <button
-                    onClick={handleNormalizeToggle}
-                    className={cn(
-                      "w-12 h-6 rounded-full transition-colors relative p-0.5",
-                      normalizeAudio ? "bg-cyan-500" : "bg-foreground/20"
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "w-5 h-5 rounded-full bg-white shadow-md transition-transform",
-                        normalizeAudio ? "translate-x-6" : "translate-x-0"
-                      )}
-                    />
-                  </button>
+          <Card id="account" icon={User} title="Account" desc={isGuest ? "You're using a guest profile." : user?.email}>
+            {isGuest && (
+              <div className="rounded-2xl bg-primary/10 border border-primary/20 p-4 space-y-3">
+                <p className="text-sm"><b>Keep your playlists and taste.</b> Add an email and password so you can sign in on any device.</p>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  <input className={field} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                  <input className={field} type="password" placeholder="Password (8+ characters)" value={guestPw} onChange={(e) => setGuestPw(e.target.value)} autoComplete="new-password" />
                 </div>
-                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                  Automatically balances loudness between different studio masters and tracks to prevent sudden volume spikes.
-                </p>
-              </div>
-              <span className="text-[11px] text-muted-foreground font-semibold">
-                Status: {normalizeAudio ? "Enabled" : "Bypassed"}
-              </span>
-            </div>
-
-            {/* Seamless DJ Crossfade */}
-            <div className="glass-card rounded-3xl p-6 space-y-3 border border-foreground/5 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Layers className="w-5 h-5 text-blue-500" />
-                    <h3 className="text-sm font-bold text-foreground">Song Crossfade</h3>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-cyan-400">
-                    {crossfadeSeconds === 0 ? "Off" : `${crossfadeSeconds}s`}
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                  Smoothly blends the ending of a song into the next track for non-stop, gapless audio playback.
-                </p>
-              </div>
-
-              <div className="pt-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="12"
-                  step="2"
-                  value={crossfadeSeconds}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCrossfadeSeconds(val);
-                  }}
-                  className="w-full h-1.5 bg-foreground/20 rounded-lg accent-cyan-400 cursor-pointer"
-                />
-                <div className="flex justify-between text-[10px] text-muted-foreground mt-1 font-mono">
-                  <span>Off</span>
-                  <span>4s</span>
-                  <span>8s</span>
-                  <span>12s</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 2: Appearance */}
-      {activeTab === "appearance" && (
-        <div className="glass-card rounded-3xl p-6 md:p-8 space-y-6 border border-foreground/5 shadow-xl">
-          <div>
-            <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-              <Palette className="w-5 h-5 text-primary" />
-              <span>Interface & Visual Experience</span>
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Customize the look, colors, and reactive glass panels of Sonara Studio.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Dark Theme Card */}
-            <div
-              onClick={() => theme !== "dark" && toggleTheme()}
-              className={cn(
-                "p-5 rounded-2xl border cursor-pointer transition-all space-y-3",
-                theme === "dark"
-                  ? "bg-foreground/15 border-cyan-400 shadow-lg"
-                  : "bg-foreground/[0.03] border-foreground/5 hover:bg-foreground/[0.06]"
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Moon className="w-4 h-4 text-cyan-400" />
-                  <span className="font-bold text-sm text-foreground">Dark Glassmorphism</span>
-                </div>
-                {theme === "dark" && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Deep black OLED background with vibrant album neon glows and backdrop-blur cards.
-              </p>
-            </div>
-
-            {/* Light Theme Card */}
-            <div
-              onClick={() => theme !== "light" && toggleTheme()}
-              className={cn(
-                "p-5 rounded-2xl border cursor-pointer transition-all space-y-3",
-                theme === "light"
-                  ? "bg-foreground/15 border-cyan-400 shadow-lg"
-                  : "bg-foreground/[0.03] border-foreground/5 hover:bg-foreground/[0.06]"
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Sun className="w-4 h-4 text-amber-500" />
-                  <span className="font-bold text-sm text-foreground">Clean Light Studio</span>
-                </div>
-                {theme === "light" && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Ultra-crisp light canvas with refined contrast and frosted acrylic glass panels.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 3: Account & Cloud */}
-      {activeTab === "account" && (
-        <div className="space-y-6">
-          {/* Account Profile Card */}
-          <div className="glass-card rounded-3xl p-6 md:p-8 border border-foreground/5 space-y-6 shadow-xl">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-violet-600 via-blue-600 to-cyan-500 p-0.5 shrink-0 flex items-center justify-center overflow-hidden shadow-lg">
-                  {user?.avatar_url ? (
-                    <img
-                      src={user.avatar_url}
-                      alt={user.display_name}
-                      className="w-full h-full rounded-[14px] object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full rounded-[14px] bg-background flex items-center justify-center font-extrabold text-lg text-foreground">
-                      {user?.display_name ? user.display_name.charAt(0).toUpperCase() : "S"}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-extrabold text-foreground text-lg">{user?.display_name || "Sonara Listener"}</p>
-                    <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-500 border border-cyan-500/30 text-[10px] font-bold">
-                      PRO MASTER
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{user?.email || "listener@sonara.app"}</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleLogout}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/20 text-xs font-semibold transition-all shadow-sm"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Sign Out</span>
+                <button disabled={upgrade.isPending || !email || guestPw.length < 8} onClick={() => upgrade.mutate({ email, password: guestPw }, { onSuccess: () => { ok("Profile saved"); setEmail(""); setGuestPw(""); }, onError: fail("Couldn't save your profile") })} className="px-5 py-2 rounded-full bg-brand text-sm font-semibold disabled:opacity-40">
+                  {upgrade.isPending ? "Saving…" : "Save my profile"}
                 </button>
               </div>
-            </div>
-
-            {/* Quick Links */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-4 border-t border-foreground/5">
-              <Link
-                href="/onboarding"
-                className="flex items-center justify-between p-4 rounded-2xl bg-foreground/[0.03] hover:bg-foreground/[0.08] border border-foreground/5 transition-all group"
-              >
-                <div className="flex items-center gap-3">
-                  <Palette className="w-4 h-4 text-cyan-500 group-hover:scale-110 transition-transform" />
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">Taste Profile</p>
-                    <p className="text-[11px] text-muted-foreground">Adjust your favorite languages & genres</p>
-                  </div>
+            )}
+            <Row label="Display name" hint="Shown in greetings and your account menu">
+              <div className="flex gap-2">
+                <input className={cn(field, "w-48")} value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
+                <button disabled={updateProfile.isPending || !name.trim() || name === user?.display_name} onClick={() => updateProfile.mutate({ display_name: name }, { onSuccess: () => ok("Name updated"), onError: fail("Couldn't update your name") })} className="px-4 rounded-xl bg-foreground text-background text-sm font-semibold disabled:opacity-40"><Check className="w-4 h-4" /></button>
+              </div>
+            </Row>
+            {!isGuest && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Change password</p>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  <input className={field} type="password" placeholder="Current password" value={curPw} onChange={(e) => setCurPw(e.target.value)} autoComplete="current-password" />
+                  <input className={field} type="password" placeholder="New password (8+ characters)" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoComplete="new-password" />
                 </div>
-                <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit →</span>
-              </Link>
+                <button disabled={changePassword.isPending || newPw.length < 8 || !curPw} onClick={() => changePassword.mutate({ current_password: curPw, new_password: newPw }, { onSuccess: () => { ok("Password changed"); setCurPw(""); setNewPw(""); }, onError: fail("Couldn't change your password") })} className="px-5 py-2 rounded-full glass-pill text-sm font-semibold disabled:opacity-40">Update password</button>
+              </div>
+            )}
+            <button onClick={() => { usePlayerStore.getState().setCurrentTrack(null); logout.mutate(undefined, { onSuccess: () => router.replace("/login") }); }} className="inline-flex items-center gap-2 px-5 py-2 rounded-full glass-pill text-sm font-semibold"><LogOut className="w-4 h-4" />Log out</button>
+          </Card>
 
-              <div
-                onClick={handleClearCache}
-                className="flex items-center justify-between p-4 rounded-2xl bg-foreground/[0.03] hover:bg-foreground/[0.08] border border-foreground/5 transition-all group cursor-pointer"
+          <Card id="appearance" icon={Palette} title="Appearance">
+            <div>
+              <p className="text-sm font-medium mb-2">Theme</p>
+              <div className="grid grid-cols-3 gap-3">
+                {themes.map(({ id, label, icon: Icon }) => (
+                  <button key={id} aria-pressed={settings.themePref === id} onClick={() => updateSettings({ themePref: id })} className={cn("flex flex-col items-center gap-2 p-4 rounded-2xl border text-sm font-medium transition-colors", settings.themePref === id ? "border-primary bg-primary/10" : "border-foreground/10 hover:border-foreground/30")}>
+                    <Icon className="w-5 h-5" />{label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-sm font-medium mb-2">Accent colour</p>
+              <div className="flex gap-3">
+                {(Object.keys(ACCENTS) as Accent[]).map((a) => (
+                  <button key={a} aria-label={ACCENTS[a].label} aria-pressed={settings.accent === a} title={ACCENTS[a].label} onClick={() => updateSettings({ accent: a })} style={{ backgroundColor: ACCENTS[a].swatch }} className={cn("w-9 h-9 rounded-full flex items-center justify-center ring-offset-2 ring-offset-background transition-all", settings.accent === a ? "ring-2 ring-foreground scale-110" : "hover:scale-105")}>
+                    {settings.accent === a && <Check className="w-4 h-4 text-white" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Row label="Compact lists" hint="Fit more songs on screen"><Toggle label="Compact lists" checked={settings.density === "compact"} onChange={(v) => updateSettings({ density: (v ? "compact" : "comfortable") as Density })} /></Row>
+            <Row label="Reduce motion" hint="Turn off animations and transitions"><Toggle label="Reduce motion" checked={settings.reduceMotion} onChange={(v) => updateSettings({ reduceMotion: v })} /></Row>
+          </Card>
+
+          <Card id="playback" icon={PlayCircle} title="Playback">
+            <Row label="Autoplay" hint="Keep playing similar music when your queue ends"><Toggle label="Autoplay" checked={settings.autoplay} onChange={(v) => updateSettings({ autoplay: v })} /></Row>
+            <Row label="Hide explicit songs" hint="Filter explicit songs out of lists"><Toggle label="Hide explicit songs" checked={settings.hideExplicit} onChange={(v) => updateSettings({ hideExplicit: v })} /></Row>
+            <Row label="Full songs" hint="Plays complete full-length tracks instead of 30-second clips">
+              <Toggle label="Full songs" checked={settings.fullSongs !== false} onChange={(v) => updateSettings({ fullSongs: v, fullSongVideo: v })} />
+            </Row>
+            <Row label="Show video window" hint="Show floating music video card. When off, songs still play in full length as pure background audio">
+              <Toggle label="Show video window" checked={settings.showVideoWindow} onChange={(v) => updateSettings({ showVideoWindow: v })} />
+            </Row>
+            <Row label="Preview speed" hint="Applies to 30-second previews">
+              <select value={settings.playbackSpeed} onChange={(e) => updateSettings({ playbackSpeed: Number(e.target.value) })} className="px-3 py-2 rounded-xl bg-foreground/5 border border-foreground/10 text-sm outline-none">
+                {[0.75, 1, 1.25, 1.5, 2].map((s) => <option key={s} value={s} className="bg-popover">{s}×</option>)}
+              </select>
+            </Row>
+            <button onClick={() => setShortcutsOpen(true)} className="inline-flex items-center gap-2 px-5 py-2 rounded-full glass-pill text-sm font-semibold"><Keyboard className="w-4 h-4" />Keyboard shortcuts</button>
+          </Card>
+
+          <Card id="taste" icon={Globe} title="Taste & region" desc="This is what Sonara uses to build your home page.">
+            <Row label="Region" hint="Decides which songs are available to you">
+              <select
+                value={region}
+                onChange={(e) => {
+                  const country = e.target.value;
+                  updateProfile.mutate({ country }, { onError: fail("Couldn't change your region") });
+                  savePrefs.mutate({ ...(prefs ?? { languages: [], genres: [], artists: [], onboarded: true }), country }, { onSuccess: () => ok("Region updated") });
+                }}
+                className="px-3 py-2 rounded-xl bg-foreground/5 border border-foreground/10 text-sm outline-none"
               >
-                <div className="flex items-center gap-3">
-                  <Trash2 className="w-4 h-4 text-rose-500 group-hover:scale-110 transition-transform" />
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">Clear Media Cache</p>
-                    <p className="text-[11px] text-muted-foreground">Reset audio stream cache and stored metadata</p>
-                  </div>
-                </div>
-                <span className="text-xs text-muted-foreground group-hover:text-foreground">Clear</span>
-              </div>
+                {!region && <option value="">Select…</option>}
+                {COUNTRIES.map(([c, n]) => <option key={c} value={c} className="bg-popover">{n}</option>)}
+              </select>
+            </Row>
+            <div className="flex flex-wrap gap-2">
+              {[...(prefs?.languages ?? []), ...(prefs?.genres ?? [])].map((t) => <span key={t} className="px-3 py-1 rounded-full bg-foreground/10 text-xs font-medium capitalize">{t}</span>)}
+              {!(prefs?.languages?.length || prefs?.genres?.length) && <p className="text-sm text-muted-foreground">You haven&apos;t chosen any languages or genres yet.</p>}
             </div>
-          </div>
+            <button onClick={() => router.push("/onboarding")} className="inline-flex items-center gap-2 px-5 py-2 rounded-full bg-brand text-sm font-semibold"><Sparkles className="w-4 h-4" />Edit languages, genres & artists</button>
+          </Card>
 
-          {/* Connected Cloud Architecture (No Spotify Mention) */}
-          <div className="glass-card rounded-3xl p-6 border border-foreground/5 space-y-4">
-            <div className="flex items-center gap-2.5">
-              <Cpu className="w-5 h-5 text-cyan-500" />
-              <h3 className="text-sm font-bold text-foreground">Cloud Streaming Architecture</h3>
+          <Card id="privacy" icon={ShieldCheck} title="Privacy & data" desc="Your data stays yours. Download it or delete it any time.">
+            <div className="flex flex-wrap gap-3">
+              <a href="/api/v1/me/export" download className="inline-flex items-center gap-2 px-5 py-2 rounded-full glass-pill text-sm font-semibold"><Download className="w-4 h-4" />Download my data</a>
+              <button onClick={() => openConfirm({ title: "Clear listening history?", detail: "This resets your insights and recently played, and makes recommendations start over.", confirmLabel: "Clear history", danger: true, onConfirm: () => clearHistory.mutateAsync().then(() => ok("History cleared")) })} className="inline-flex items-center gap-2 px-5 py-2 rounded-full glass-pill text-sm font-semibold"><Trash2 className="w-4 h-4" />Clear listening history</button>
             </div>
+            <div className="rounded-2xl border border-red-500/30 p-4 space-y-2">
+              <p className="text-sm font-semibold text-red-500">Delete account</p>
+              <p className="text-xs text-muted-foreground">Permanently deletes your profile, playlists, likes, follows and history. This can&apos;t be undone.</p>
+              <button onClick={() => openConfirm({ title: "Delete your account?", detail: "Everything will be permanently removed.", confirmLabel: "Delete forever", danger: true, onConfirm: () => deleteAccount.mutateAsync().then(() => { usePlayerStore.getState().setCurrentTrack(null); window.location.href = "/login"; }).catch(fail("Couldn't delete your account")) })} className="px-5 py-2 rounded-full bg-red-600 hover:bg-red-500 text-white text-sm font-semibold">Delete my account</button>
+            </div>
+          </Card>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div className="p-3.5 rounded-xl bg-foreground/[0.03] border border-foreground/5 space-y-1">
-                <span className="text-muted-foreground block text-[11px]">Primary Catalog</span>
-                <span className="font-semibold text-foreground">Sonara Global Cloud</span>
-              </div>
-              <div className="p-3.5 rounded-xl bg-foreground/[0.03] border border-foreground/5 space-y-1">
-                <span className="text-muted-foreground block text-[11px]">Lyrics Stream</span>
-                <span className="font-semibold text-foreground">LRCLIB Realtime Sync</span>
-              </div>
-              <div className="p-3.5 rounded-xl bg-foreground/[0.03] border border-foreground/5 space-y-1">
-                <span className="text-muted-foreground block text-[11px]">Audio Engine</span>
-                <span className="font-semibold text-cyan-400">Sonara Studio Master</span>
-              </div>
-            </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground pb-4">
+            <p>Sonara · music metadata from public catalogues · lyrics from LRCLIB</p>
+            <button onClick={() => { resetSettings(); ok("Settings reset"); }} className="hover:text-foreground">Reset appearance & playback</button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

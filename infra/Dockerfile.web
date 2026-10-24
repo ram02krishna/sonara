@@ -11,6 +11,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Next bakes rewrites in at build time: point /api/v1 at the API container on the compose network.
+ARG API_INTERNAL_URL=http://api:8080/api/v1
+ENV API_INTERNAL_URL=$API_INTERNAL_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build --workspace=apps/web

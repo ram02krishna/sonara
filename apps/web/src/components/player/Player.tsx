@@ -1,645 +1,177 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import {
-  Play,
-  Pause,
-  SkipBack,
-  SkipForward,
-  Shuffle,
-  Repeat,
-  Repeat1,
-  Volume2,
-  VolumeX,
-  Maximize2,
-  Mic2,
-  ListMusic,
-  Heart,
-} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { Maximize2, Mic2, ListMusic, MoonStar, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Tv, Volume1, Volume2, VolumeX } from "lucide-react";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { useAppStore } from "@/store/useAppStore";
 import { cn, formatDuration } from "@/lib/utils";
-import { apiFetch, ApiError } from "@/lib/api-client";
-import { useTrackLiked, friendlyError } from "@/hooks/useSonara";
-import { getSdkPlayer } from "@/lib/spotify-sdk";
+import { playback } from "@/lib/playback";
+import { Cover, LikeButton } from "@/components/ui/media";
 
-declare global {
-  interface Window {
-    onYouTubeIframeAPIReady?: () => void;
-    YT?: any;
-  }
+function SleepTimer() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const endsAt = usePlayerStore((s) => s.sleepTimerEndsAt);
+  const afterTrack = usePlayerStore((s) => s.sleepAfterTrack);
+  const setSleepTimer = usePlayerStore((s) => s.setSleepTimer);
+  const addToast = useAppStore((s) => s.addToast);
+  const [, force] = useState(0);
+  const active = !!endsAt || afterTrack;
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  useEffect(() => {
+    if (!endsAt) return;
+    const id = setInterval(() => force((n) => n + 1), 15000);
+    return () => clearInterval(id);
+  }, [endsAt]);
+
+  const set = (minutes: number | null, end = false) => {
+    setSleepTimer(minutes, end);
+    setOpen(false);
+    addToast({ title: minutes || end ? "Sleep timer set" : "Sleep timer off", description: end ? "Stops after this song" : minutes ? `Stops in ${minutes} minutes` : undefined, type: "info", duration: 2000 });
+  };
+  const left = endsAt ? Math.max(1, Math.ceil((endsAt - Date.now()) / 60000)) : 0;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)} aria-label="Sleep timer" aria-expanded={open} title={active ? (afterTrack ? "Stops after this song" : `Stops in ${left} min`) : "Sleep timer"} className={cn("p-2 rounded-full hover:bg-foreground/10", active ? "text-primary" : "text-muted-foreground hover:text-foreground")}>
+        <MoonStar className="w-[18px] h-[18px]" />
+      </button>
+      {open && (
+        <div role="menu" className="pop-in absolute bottom-12 right-0 w-48 p-1.5 rounded-2xl border border-foreground/10 bg-popover/95 backdrop-blur-xl shadow-2xl">
+          <p className="px-3 py-1.5 text-xs font-semibold text-muted-foreground">Sleep timer</p>
+          {[15, 30, 45, 60].map((m) => (
+            <button key={m} role="menuitem" onClick={() => set(m)} className="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-foreground/10">{m} minutes</button>
+          ))}
+          <button role="menuitem" onClick={() => set(null, true)} className="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-foreground/10">End of this song</button>
+          {active && <button role="menuitem" onClick={() => set(null)} className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-500 hover:bg-foreground/10">Turn off</button>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Player() {
   const {
-    currentTrack,
-    isPlaying,
-    setIsPlaying,
-    progressMs,
-    setProgressMs,
-    durationMs,
-    volume,
-    setVolume,
-    isMuted,
-    toggleMute,
-    shuffle,
-    toggleShuffle,
-    repeatMode,
-    cycleRepeatMode,
-    playNext,
-    playPrevious,
-    isExpanded,
-    setIsExpanded,
-    rightPanelTab,
-    toggleRightPanelTab,
-    isPremiumRequired,
-    deviceId,
+    currentTrack, isPlaying, setIsPlaying, progressMs, durationMs, volume, setVolume, isMuted, toggleMute, shuffle, toggleShuffle,
+    repeatMode, cycleRepeatMode, playNext, playPrevious, setIsExpanded, rightPanelTab, toggleRightPanelTab, engine,
   } = usePlayerStore();
+  const fullSongVideo = useAppStore((s) => s.settings.fullSongVideo);
+  const showVideoWindow = useAppStore((s) => s.settings.showVideoWindow);
+  const updateSettings = useAppStore((s) => s.updateSettings);
 
-  const { addToast, audioQuality } = useAppStore();
-  const { liked: isLiked, toggle: toggleLike } = useTrackLiked(currentTrack);
+  if (!currentTrack) return null;
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ytPlayerRef = useRef<any>(null);
-  const isYtReadyRef = useRef<boolean>(false);
-  const pendingVideoIdRef = useRef<string | null>(null);
-  const recordedPlayRef = useRef<string | null>(null);
-  const activeEngineRef = useRef<"sdk" | "youtube" | "preview">("youtube");
-  const [isFullTrackMode, setIsFullTrackMode] = useState<boolean>(true);
+  const pct = durationMs > 0 ? Math.min(100, (progressMs / durationMs) * 100) : 0;
+  const VolIcon = isMuted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
+  const RepeatIcon = repeatMode === "track" ? Repeat1 : Repeat;
+  const art = currentTrack.album?.images?.[0]?.url;
 
-  const sdkMode = !!deviceId && !isPremiumRequired;
-
-  // Initialize YouTube Iframe API for full song audio streaming
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const initYt = () => {
-      if (!window.YT || !window.YT.Player || ytPlayerRef.current) return;
-      try {
-        ytPlayerRef.current = new window.YT.Player("sonara-yt-player-target", {
-          height: "1",
-          width: "1",
-          playerVars: {
-            autoplay: 1,
-            controls: 0,
-            disablekb: 1,
-            fs: 0,
-            playsinline: 1,
-            rel: 0,
-          },
-          events: {
-            onReady: (event: any) => {
-              isYtReadyRef.current = true;
-              const v = isMuted ? 0 : volume;
-              try {
-                event.target.setVolume(v);
-                const iframe = event.target.getIframe?.();
-                if (iframe) {
-                  iframe.setAttribute("allow", "autoplay; encrypted-media");
-                }
-                if (pendingVideoIdRef.current) {
-                  const vid = pendingVideoIdRef.current;
-                  pendingVideoIdRef.current = null;
-                  event.target.loadVideoById({ videoId: vid });
-                  event.target.playVideo?.();
-                  setIsPlaying(true);
-                }
-              } catch {
-                // ignore
-              }
-            },
-            onStateChange: (event: any) => {
-              // 0 = ENDED
-              if (event.data === 0) {
-                playNext();
-              }
-              // 1 = PLAYING
-              if (event.data === 1) {
-                setIsPlaying(true);
-              }
-              // 2 = PAUSED
-              if (event.data === 2) {
-                setIsPlaying(false);
-              }
-            },
-            onError: () => {
-              // If YouTube blocked this specific video, switch to audio preview
-              activeEngineRef.current = "preview";
-              setIsFullTrackMode(false);
-              if (audioRef.current && currentTrack?.preview_url) {
-                audioRef.current.src = currentTrack.preview_url;
-                audioRef.current.play().catch(() => undefined);
-              }
-            },
-          },
-        });
-      } catch {
-        // Fallback to HTML5 audio preview
-      }
-    };
-
-    if (!window.YT) {
-      const existingScript = document.getElementById("yt-iframe-api");
-      if (!existingScript) {
-        const tag = document.createElement("script");
-        tag.id = "yt-iframe-api";
-        tag.src = "https://www.youtube.com/iframe_api";
-        window.onYouTubeIframeAPIReady = initYt;
-        document.body.appendChild(tag);
-      }
-    } else {
-      initYt();
-    }
-  }, [isMuted, volume, playNext, setIsPlaying, currentTrack?.preview_url]);
-
-  // Load and play track whenever currentTrack changes
-  useEffect(() => {
-    if (!currentTrack) return;
-    let cancelled = false;
-
-    // Reset progress and set default track duration
-    setProgressMs(0);
-    recordedPlayRef.current = null;
-    if (currentTrack.duration_ms) {
-      usePlayerStore.setState({ durationMs: currentTrack.duration_ms });
-    }
-
-    // 1. If Spotify SDK mode is active
-    if (sdkMode) {
-      activeEngineRef.current = "sdk";
-      (async () => {
-        try {
-          await apiFetch<void>("/me/player/play", {
-            method: "PUT",
-            params: { device_id: deviceId || undefined },
-            body: JSON.stringify({ uris: [currentTrack.uri] }),
-          });
-        } catch {
-          if (cancelled) return;
-          activeEngineRef.current = "youtube";
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    // 2. Full-Song Open Stream Resolver
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/stream?name=${encodeURIComponent(currentTrack.name)}&artist=${encodeURIComponent(
-            currentTrack.artists?.[0]?.name || ""
-          )}&quality=${audioQuality}`
-        );
-        const data = await res.json();
-
-        if (cancelled) return;
-
-        if (data.found && data.videoId) {
-          activeEngineRef.current = "youtube";
-          setIsFullTrackMode(true);
-          audioRef.current?.pause();
-
-          const startYt = (vid: string) => {
-            if (ytPlayerRef.current?.loadVideoById && isYtReadyRef.current) {
-              try {
-                ytPlayerRef.current.loadVideoById({ videoId: vid });
-                const v = isMuted ? 0 : volume;
-                ytPlayerRef.current.setVolume?.(v);
-                const q = audioQuality === "lossless" ? "highres" : audioQuality === "high" ? "hd1080" : "medium";
-                ytPlayerRef.current.setPlaybackQuality?.(q);
-                ytPlayerRef.current.playVideo?.();
-                setIsPlaying(true);
-                return true;
-              } catch {
-                return false;
-              }
-            }
-            return false;
-          };
-
-          if (!startYt(data.videoId)) {
-            pendingVideoIdRef.current = data.videoId;
-            const checkYt = setInterval(() => {
-              if (startYt(data.videoId) || cancelled) clearInterval(checkYt);
-            }, 80);
-            setTimeout(() => clearInterval(checkYt), 4000);
-          }
-          return;
-        }
-      } catch {
-        // Fallback to preview
-      }
-
-      // 3. Fallback to 30s audio preview
-      activeEngineRef.current = "preview";
-      setIsFullTrackMode(false);
-      let previewUrl = currentTrack.preview_url || null;
-      if (!previewUrl) {
-        try {
-          const r = await apiFetch<{ preview_url?: string }>("/preview", {
-            params: { name: currentTrack.name, artist: currentTrack.artists?.[0]?.name },
-          });
-          previewUrl = r.preview_url || null;
-        } catch {
-          previewUrl = null;
-        }
-      }
-
-      if (cancelled) return;
-
-      if (previewUrl && audioRef.current) {
-        audioRef.current.src = previewUrl;
-        audioRef.current.load();
-        audioRef.current.play().catch(() => setIsPlaying(false));
-      } else {
-        setIsPlaying(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack?.id, sdkMode, deviceId]);
-
-  // Sync YouTube progress head every 300ms
-  useEffect(() => {
-    if (!isPlaying) return;
-
-    const interval = setInterval(() => {
-      if (activeEngineRef.current === "youtube" && ytPlayerRef.current?.getCurrentTime) {
-        try {
-          const currSec = ytPlayerRef.current.getCurrentTime();
-          const durSec = ytPlayerRef.current.getDuration();
-          if (typeof currSec === "number" && isFinite(currSec)) {
-            const currentMs = Math.round(currSec * 1000);
-            setProgressMs(currentMs);
-
-            // Automatically record genuine listening history to power live analytics
-            if (currentMs >= 12000 && currentTrack && recordedPlayRef.current !== currentTrack.id) {
-              recordedPlayRef.current = currentTrack.id;
-              apiFetch("/history", {
-                method: "POST",
-                body: JSON.stringify({
-                  track: currentTrack,
-                  listened_ms: currentMs,
-                  source: "stream",
-                }),
-              }).catch(() => undefined);
-            }
-          }
-          if (typeof durSec === "number" && durSec > 0 && isFinite(durSec)) {
-            const durMs = Math.round(durSec * 1000);
-            if (Math.abs(durationMs - durMs) > 2000) {
-              usePlayerStore.setState({ durationMs: durMs });
-            }
-          }
-        } catch {
-          // ignore transient poll error
-        }
-      }
-    }, 300);
-
-    return () => clearInterval(interval);
-  }, [isPlaying, durationMs, setProgressMs]);
-
-  // Play / Pause control
-  useEffect(() => {
-    if (activeEngineRef.current === "youtube" && ytPlayerRef.current) {
-      try {
-        if (isPlaying) {
-          ytPlayerRef.current.playVideo();
-        } else {
-          ytPlayerRef.current.pauseVideo();
-        }
-      } catch {
-        // ignore
-      }
-    } else if (activeEngineRef.current === "preview" && audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.play().catch(() => setIsPlaying(false));
-      } else {
-        audioRef.current.pause();
-      }
-    }
-  }, [isPlaying, setIsPlaying]);
-
-  // Volume control
-  useEffect(() => {
-    const v = isMuted ? 0 : Math.max(0, Math.min(100, volume));
-    if (ytPlayerRef.current?.setVolume) {
-      try {
-        ytPlayerRef.current.setVolume(v);
-      } catch {
-        // ignore
-      }
-    }
-    if (audioRef.current) {
-      audioRef.current.volume = v / 100;
-    }
-    if (sdkMode) {
-      getSdkPlayer()?.setVolume(v / 100);
-    }
-  }, [volume, isMuted, sdkMode]);
-
-  const handleTogglePlay = () => {
-    if (!currentTrack) return;
-
-    if (activeEngineRef.current === "youtube" && ytPlayerRef.current) {
-      try {
-        const state = ytPlayerRef.current.getPlayerState?.();
-        // 1 = PLAYING, 3 = BUFFERING
-        if (state === 1 || state === 3) {
-          ytPlayerRef.current.pauseVideo?.();
-          setIsPlaying(false);
-          return;
-        } else if (state === 2 || state === -1 || state === 0 || state === 5) {
-          ytPlayerRef.current.playVideo?.();
-          setIsPlaying(true);
-          return;
-        }
-      } catch {
-        // fallback
-      }
-    } else if (activeEngineRef.current === "preview" && audioRef.current) {
-      if (!audioRef.current.paused) {
-        audioRef.current.pause();
-        setIsPlaying(false);
-      } else {
-        audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-      }
-      return;
-    }
-
-    setIsPlaying(!isPlaying);
-  };
-
-  const handleToggleLike = () => {
-    if (!currentTrack) return;
-    const next = !isLiked;
-    toggleLike.mutate(next, {
-      onSuccess: () => addToast({ title: next ? "Added to Liked Songs" : "Removed from Liked Songs", type: "success" }),
-      onError: (err) => addToast({ title: "Couldn't update Liked Songs", description: friendlyError(err).detail, type: "error" }),
-    });
-  };
-
-  const handleSeek = (newTimeMs: number) => {
-    setProgressMs(newTimeMs);
-    if (activeEngineRef.current === "youtube" && ytPlayerRef.current?.seekTo) {
-      ytPlayerRef.current.seekTo(newTimeMs / 1000, true);
-    } else if (activeEngineRef.current === "preview" && audioRef.current) {
-      audioRef.current.currentTime = newTimeMs / 1000;
-    } else if (sdkMode) {
-      getSdkPlayer()?.seek(newTimeMs);
-    }
-  };
-
-  const progressPercent = durationMs > 0 ? (progressMs / durationMs) * 100 : 0;
+  const slider = (value: number, max: number, onChange: (n: number) => void, label: string, className?: string) => (
+    <input
+      type="range"
+      min={0}
+      max={max}
+      step={max > 1000 ? 250 : 1}
+      value={Math.min(value, max)}
+      onChange={(e) => onChange(Number(e.target.value))}
+      aria-label={label}
+      className={cn("sonara-range", className)}
+      style={{ ["--pct" as string]: `${max ? (value / max) * 100 : 0}%` }}
+    />
+  );
 
   return (
     <>
-      {/* Invisible YouTube Player container for full audio stream - ALWAYS MOUNTED */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: 0,
-          right: 0,
-          width: "1px",
-          height: "1px",
-          opacity: 0.001,
-          pointerEvents: "none",
-          zIndex: -999,
-        }}
-        aria-hidden="true"
-      >
-        <div id="sonara-yt-player-target" />
-      </div>
-
-      {/* Fallback HTML5 Audio Element for previews - ALWAYS MOUNTED */}
-      <audio
-        ref={audioRef}
-        preload="auto"
-        onTimeUpdate={() => {
-          if (activeEngineRef.current === "preview" && audioRef.current && isFinite(audioRef.current.currentTime)) {
-            setProgressMs(Math.round(audioRef.current.currentTime * 1000));
-          }
-        }}
-        onLoadedMetadata={() => {
-          if (activeEngineRef.current === "preview" && audioRef.current?.duration && isFinite(audioRef.current.duration)) {
-            usePlayerStore.setState({ durationMs: Math.round(audioRef.current.duration * 1000) });
-          }
-        }}
-        onEnded={() => {
-          if (activeEngineRef.current === "preview") {
-            playNext();
-          }
-        }}
-      />
-
-      {currentTrack && !isExpanded && (
-        <footer className="fixed bottom-0 left-0 right-0 z-40 px-4 pb-3 pt-1 pointer-events-none">
-      <div className="max-w-7xl mx-auto pointer-events-auto">
-        <div className="glass-panel border border-foreground/10 rounded-2xl md:rounded-3xl p-3 md:px-5 md:py-3 shadow-2xl backdrop-blur-2xl flex items-center justify-between gap-4">
-          
-          {/* Left: Track Information & Artwork */}
-          <div className="flex items-center gap-3.5 min-w-0 max-w-[240px] md:max-w-[300px]">
-            <div
-              className="relative w-12 h-12 md:w-14 md:h-14 rounded-xl overflow-hidden shrink-0 shadow-lg cursor-pointer group"
-              onClick={() => setIsExpanded(true)}
-            >
-              <img
-                src={currentTrack.album?.images?.[0]?.url || ""}
-                alt={currentTrack.name}
-                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-              />
-              <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                <Maximize2 className="w-4 h-4 text-foreground" />
-              </div>
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <p
-                onClick={() => setIsExpanded(true)}
-                className="text-sm font-semibold text-foreground truncate cursor-pointer hover:underline"
-              >
-                {currentTrack.name}
-              </p>
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-muted-foreground truncate hover:text-foreground cursor-pointer transition-colors">
-                  {currentTrack.artists?.map((a) => a.name).join(", ")}
-                </p>
-                {isFullTrackMode && (
-                  <span className={cn(
-                    "text-[10px] px-1.5 py-0.5 rounded-md font-semibold border shrink-0",
-                    audioQuality === "lossless"
-                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
-                      : audioQuality === "high"
-                      ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                      : "bg-slate-500/10 text-slate-400 border-slate-500/20"
-                  )}>
-                    {audioQuality === "lossless" ? "Hi-Res Lossless" : audioQuality === "high" ? "High-Fi 320k" : "Standard AAC"}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <button
-              onClick={handleToggleLike}
-              aria-label="Like track"
-              className="p-1.5 rounded-full hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            >
-              <Heart
-                className={cn(
-                  "w-4 h-4 transition-all",
-                  isLiked ? "text-fuchsia-600 dark:text-fuchsia-400 fill-fuchsia-400 scale-110" : "text-muted-foreground"
-                )}
-              />
-            </button>
+      {/* Desktop player bar */}
+      <div className="hidden md:grid fixed bottom-2 inset-x-2 z-40 h-[88px] grid-cols-[1fr_minmax(0,1.6fr)_1fr] items-center gap-4 px-4 rounded-3xl glass-panel shadow-2xl">
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={() => setIsExpanded(true)} aria-label="Open full-screen player" className="group relative shrink-0">
+            <Cover src={art} alt={currentTrack.name} className="w-14 h-14 rounded-xl shadow-lg" />
+            <span className="absolute inset-0 rounded-xl bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><Maximize2 className="w-4 h-4 text-white" /></span>
+          </button>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground truncate">{currentTrack.name}</p>
+            <p className="text-xs text-muted-foreground truncate">
+              {currentTrack.artists?.map((a, i) => (
+                <React.Fragment key={`${a.id}-${i}`}>
+                  {i > 0 && ", "}
+                  {a.id ? <Link href={`/artist/${a.id}`} className="hover:underline hover:text-foreground">{a.name}</Link> : a.name}
+                </React.Fragment>
+              ))}
+            </p>
           </div>
+          <LikeButton track={currentTrack} />
+        </div>
 
-          {/* Center: Controls & Scrubber */}
-          <div className="flex-1 max-w-2xl flex flex-col items-center gap-1.5">
-            {/* Buttons */}
-            <div className="flex items-center gap-4 md:gap-6">
-              <button
-                onClick={toggleShuffle}
-                aria-label="Shuffle"
-                className={cn(
-                  "hidden sm:block p-1.5 rounded-lg transition-colors",
-                  shuffle ? "text-cyan-600 dark:text-cyan-400" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                <Shuffle className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={playPrevious}
-                aria-label="Previous track"
-                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <SkipBack className="w-5 h-5" />
-              </button>
-
-              <button
-                onClick={handleTogglePlay}
-                aria-label={isPlaying ? "Pause" : "Play"}
-                className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-foreground text-background flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all"
-              >
-                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
-              </button>
-
-              <button
-                onClick={playNext}
-                aria-label="Next track"
-                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <SkipForward className="w-5 h-5" />
-              </button>
-
-              <button
-                onClick={cycleRepeatMode}
-                aria-label="Repeat mode"
-                className={cn(
-                  "hidden sm:block p-1.5 rounded-lg transition-colors",
-                  repeatMode !== "off" ? "text-cyan-600 dark:text-cyan-400" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {repeatMode === "track" ? <Repeat1 className="w-4 h-4" /> : <Repeat className="w-4 h-4" />}
-              </button>
-            </div>
-
-            {/* Scrubber bar */}
-            <div className="w-full flex items-center gap-3">
-              <span className="text-[11px] font-mono text-muted-foreground w-9 text-right shrink-0">
-                {formatDuration(progressMs)}
-              </span>
-
-              <div
-                className="relative flex-1 h-1.5 bg-foreground/10 hover:h-2 rounded-full cursor-pointer transition-all group"
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const clickX = e.clientX - rect.left;
-                  const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-                  handleSeek(Math.round(ratio * durationMs));
-                }}
-              >
-                <div
-                  className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-violet-500 via-cyan-400 to-teal-300 rounded-full"
-                  style={{ width: `${progressPercent}%` }}
-                />
-                <div
-                  className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
-                  style={{ left: `calc(${progressPercent}% - 6px)` }}
-                />
-              </div>
-
-              <span className="text-[11px] font-mono text-muted-foreground w-9 text-left shrink-0">
-                {formatDuration(durationMs)}
-              </span>
-            </div>
+        <div className="flex flex-col items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-2">
+            <button onClick={toggleShuffle} aria-label="Shuffle" aria-pressed={shuffle} className={cn("p-2 rounded-full hover:bg-foreground/10", shuffle ? "text-primary" : "text-muted-foreground hover:text-foreground")}><Shuffle className="w-4 h-4" /></button>
+            <button onClick={playPrevious} aria-label="Previous" className="p-2 rounded-full text-foreground hover:bg-foreground/10"><SkipBack className="w-5 h-5 fill-current" /></button>
+            <button onClick={() => setIsPlaying(!isPlaying)} aria-label={isPlaying ? "Pause" : "Play"} className="w-10 h-10 rounded-full bg-foreground text-background flex items-center justify-center hover:scale-105 active:scale-95 transition-transform">
+              {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+            </button>
+            <button onClick={() => playNext()} aria-label="Next" className="p-2 rounded-full text-foreground hover:bg-foreground/10"><SkipForward className="w-5 h-5 fill-current" /></button>
+            <button onClick={cycleRepeatMode} aria-label={`Repeat: ${repeatMode}`} className={cn("p-2 rounded-full hover:bg-foreground/10", repeatMode !== "off" ? "text-primary" : "text-muted-foreground hover:text-foreground")}><RepeatIcon className="w-4 h-4" /></button>
           </div>
-
-          {/* Right: Actions & Volume */}
-          <div className="flex items-center gap-2 md:gap-3">
-            <button
-              onClick={() => toggleRightPanelTab("lyrics")}
-              aria-label="Lyrics"
-              className={cn(
-                "p-2 rounded-xl transition-colors",
-                rightPanelTab === "lyrics"
-                  ? "bg-foreground/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Mic2 className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={() => toggleRightPanelTab("queue")}
-              aria-label="Queue"
-              className={cn(
-                "p-2 rounded-xl transition-colors",
-                rightPanelTab === "queue"
-                  ? "bg-foreground/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <ListMusic className="w-4 h-4" />
-            </button>
-
-            {/* Volume slider */}
-            <div className="hidden lg:flex items-center gap-2">
-              <button
-                onClick={toggleMute}
-                aria-label="Mute / Unmute"
-                className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={isMuted ? 0 : volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                className="w-20 h-1 bg-foreground/20 rounded-lg accent-cyan-400 cursor-pointer"
-              />
-            </div>
-
-            <button
-              onClick={() => setIsExpanded(true)}
-              aria-label="Expand player"
-              className="p-2 rounded-xl text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Maximize2 className="w-4 h-4" />
-            </button>
+          <div className="flex items-center gap-2 w-full max-w-xl">
+            <span className="text-[11px] tabular-nums text-muted-foreground w-9 text-right">{formatDuration(progressMs)}</span>
+            {slider(progressMs, durationMs || 1, (n) => playback.seek(n), "Seek", "flex-1")}
+            <span className="text-[11px] tabular-nums text-muted-foreground w-9">{formatDuration(durationMs)}</span>
           </div>
         </div>
+
+        <div className="flex items-center justify-end gap-1">
+          {engine === "preview" && !fullSongVideo && (
+            <span title="This is a 30-second preview. Full song streaming will auto-fallback." className="hidden xl:inline-block mr-1 px-2 py-0.5 rounded-full bg-foreground/10 text-[10px] font-semibold tracking-wide text-muted-foreground">PREVIEW</span>
+          )}
+          <button
+            onClick={() => updateSettings({ showVideoWindow: !showVideoWindow })}
+            aria-label={showVideoWindow ? "Hide video window" : "Show video window"}
+            title={
+              showVideoWindow
+                ? "Video window: ON (Click to hide video; song continues playing in background)"
+                : "Video window: OFF (Click to show video; full song playing in background)"
+            }
+            className={cn(
+              "p-2 rounded-full hover:bg-foreground/10 transition-colors",
+              showVideoWindow ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Tv className="w-[18px] h-[18px]" />
+          </button>
+          <button onClick={() => toggleRightPanelTab("lyrics")} aria-label="Lyrics" aria-pressed={rightPanelTab === "lyrics"} className={cn("p-2 rounded-full hover:bg-foreground/10", rightPanelTab === "lyrics" ? "text-primary" : "text-muted-foreground hover:text-foreground")}><Mic2 className="w-[18px] h-[18px]" /></button>
+          <button onClick={() => toggleRightPanelTab("queue")} aria-label="Queue" aria-pressed={rightPanelTab === "queue"} className={cn("p-2 rounded-full hover:bg-foreground/10", rightPanelTab === "queue" ? "text-primary" : "text-muted-foreground hover:text-foreground")}><ListMusic className="w-[18px] h-[18px]" /></button>
+          <SleepTimer />
+          <button onClick={toggleMute} aria-label={isMuted ? "Unmute" : "Mute"} className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-foreground/10"><VolIcon className="w-[18px] h-[18px]" /></button>
+          {slider(volume, 100, setVolume, "Volume", "w-24")}
+          <button onClick={() => setIsExpanded(true)} aria-label="Full screen" className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-foreground/10"><Maximize2 className="w-[18px] h-[18px]" /></button>
+        </div>
       </div>
-    </footer>
-  )}
-</>
-);
+
+      {/* Mobile mini player */}
+      <div className="md:hidden fixed bottom-[calc(3.9rem+env(safe-area-inset-bottom))] inset-x-2 z-40 rounded-2xl glass-panel shadow-xl overflow-hidden">
+        <div className="flex items-center gap-3 p-2.5">
+          <button onClick={() => setIsExpanded(true)} className="flex items-center gap-3 min-w-0 flex-1 text-left" aria-label="Open full-screen player">
+            <Cover src={art} alt={currentTrack.name} className="w-11 h-11 rounded-lg shrink-0" />
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-foreground truncate">{currentTrack.name}</span>
+              <span className="block text-xs text-muted-foreground truncate">{currentTrack.artists?.map((a) => a.name).join(", ")}</span>
+            </span>
+          </button>
+          <button onClick={() => setIsPlaying(!isPlaying)} aria-label={isPlaying ? "Pause" : "Play"} className="w-10 h-10 rounded-full bg-foreground text-background flex items-center justify-center">
+            {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+          </button>
+          <button onClick={() => playNext()} aria-label="Next" className="p-2 text-foreground"><SkipForward className="w-5 h-5 fill-current" /></button>
+        </div>
+        <div className="h-0.5 bg-foreground/10"><div className="h-full bg-brand" style={{ width: `${pct}%` }} /></div>
+      </div>
+    </>
+  );
 }
