@@ -81,6 +81,3 @@ scripts/e2e_api.py        end-to-end API scenario
 ## Notes on music rights
 
 Spotify's catalogue metadata and iTunes previews are used under their public API terms; Sonara does not stream Spotify audio. Full-length playback is only offered through YouTube's own embedded player. If you launch publicly, review the Spotify Developer Policy and YouTube API Terms (attribution, quotas, and Spotify's extended-quota review).
-
-## License
-MIT
