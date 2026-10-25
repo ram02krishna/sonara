@@ -1,14 +1,26 @@
-name: CI Pipeline
+name: CI
 
+# Runs on pull requests and on pushes to `develop`.
+# Pushes to `main` run it through deploy.yml (which calls this workflow first),
+# so code is always tested before it is built and shipped.
 on:
-  push:
-    branches: [ main, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
+  push:
+    branches: [develop]
+  workflow_call:
+    inputs:
+      docker-build:
+        description: "Also verify that both Docker images build"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 jobs:
   lint-and-typecheck:
-    name: Lint & Typecheck
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -23,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck Web
+      - name: Lint web
         run: npm run lint --workspace=apps/web
 
       - name: Setup Go
@@ -32,13 +44,13 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: apps/api/go.sum
 
-      - name: Go Vet
+      - name: Go vet
         run: |
           cd apps/api
           go vet ./...
 
   backend-tests:
-    name: Backend Tests
+    name: Backend tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -73,8 +85,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: apps/api/go.sum
 
-      - name: Run Backend Tests
+      - name: Run backend tests
         env:
           DATABASE_URL: postgres://sonara:sonarasecret@localhost:5432/sonara_test?sslmode=disable
           REDIS_URL: redis://localhost:6379/0
@@ -84,7 +97,7 @@ jobs:
           go test -v -race ./...
 
   build-artifacts:
-    name: Build Frontend & Backend
+    name: Build web & API
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -99,15 +112,46 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Web Frontend
+      - name: Build web
         run: npm run build --workspace=apps/web
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: apps/api/go.sum
 
-      - name: Build API Binary
+      - name: Build API binary
         run: |
           cd apps/api
           CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o bin/server ./cmd/server
+
+  docker-build:
+    name: Docker images build
+    # Skipped when deploy.yml calls this workflow with docker-build: false (it builds the API image itself).
+    if: ${{ inputs.docker-build != false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile.api
+          push: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build web image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile.web
+          push: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

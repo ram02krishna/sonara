@@ -157,20 +157,19 @@ npm run dev
 
 ---
 
-### Deploying the Web Frontend to Vercel
+### Deploying to production (Vercel + AWS EC2)
 
-Sonara's web frontend is fully optimized for Vercel deployment:
+Production runs as two halves: the **Next.js web app on Vercel** and the **Go API, PostgreSQL and Redis on an AWS EC2 server**
+behind **nginx** (HTTPS via Let's Encrypt), all as Docker containers. Every push to `main` triggers GitHub Actions, which tests
+the code, builds the API Docker image, pushes it to Docker Hub, and automatically pulls and updates the EC2 server (no AWS ECR required).
+Vercel redeploys the web app on the same push.
 
-1. **Import the repository into Vercel**:
-   - You can leave **Root Directory** as the repository root (Vercel will detect [vercel.json](file:///d:/WorkSpace/sonara/vercel.json) automatically) OR set it to `apps/web`.
-2. **Environment Variables**:
-   In your Vercel Project Settings -> **Environment Variables**, add:
-   - `API_INTERNAL_URL`: URL of your deployed Go backend API (e.g. `https://api.yourdomain.com`). The Next.js frontend proxies `/api/v1` requests to this backend so that HTTP-only session cookies and authentication work out of the box.
-   - `NEXT_PUBLIC_APP_URL`: Your Vercel frontend URL (e.g. `https://sonara.vercel.app`).
-3. **Backend CORS / Cookie configuration**:
-   On your Go API deployment (Fly.io, Railway, Render, VPS, or Docker container), set:
-   - `COOKIE_SECURE=true` (since Vercel serves over HTTPS)
-   - `ALLOWED_ORIGINS=https://sonara.vercel.app`
+**Full step-by-step guide: [DEPLOYMENT.md](DEPLOYMENT.md)**
+
+Quick reference for the Vercel side (set the project's **Root Directory to `apps/web`**):
+- `API_INTERNAL_URL` = your public API URL, e.g. `https://api.yourdomain.com`. The Next.js app proxies `/api/v1` to it, so the HTTP-only
+  session cookie stays first-party. It is read at build time; the build fails with a clear message if it is missing.
+- On the API server set `COOKIE_SECURE=true` and `ALLOWED_ORIGINS=https://your-app.vercel.app` (the production compose file already does the former).
 
 ## Tests
 
@@ -188,7 +187,10 @@ apps/web/src/components   layout (Sidebar, Header, RightPanel), player (Playback
 apps/web/src/hooks        data hooks (TanStack Query), play helpers
 apps/web/src/store        Zustand: player, app settings, UI (menus/dialogs)
 apps/api/internal         handler, repository, provider (Spotify, iTunes, LRCLIB, YouTube), dashboard, service
-infra/                    docker-compose, Dockerfiles, postgres/init.sql
+infra/                    docker-compose (local), Dockerfiles, postgres/init.sql
+infra/aws/                production stack: compose, nginx, deploy + TLS scripts, .env.example
+.github/workflows/        ci.yml (checks) and deploy.yml (build -> ECR -> EC2)
+docs/DEPLOYMENT.md        Vercel + AWS deployment guide
 scripts/e2e_api.py        end-to-end API scenario
 ```
 

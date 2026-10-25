@@ -1,0 +1,143 @@
+# ==============================================================================
+# Sonara production stack for a single AWS EC2 host (Docker Hub + EC2).
+#
+#   Internet ─► nginx (80/443, TLS via Let's Encrypt) ─► api (Go) ─► postgres, redis
+#
+# Only nginx publishes ports. The API, Postgres and Redis live on a private
+# Docker network and are unreachable from the internet.
+#
+# GitHub Actions builds the Docker image, pushes it to Docker Hub, and triggers
+# EC2 to pull and restart the stack automatically on every push to main.
+# ==============================================================================
+name: sonara
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env (the API hostname, e.g. api.example.com)}
+      # Only substitute ${DOMAIN} in the template; leave nginx's own $variables alone.
+      NGINX_ENVSUBST_FILTER: ^DOMAIN$$
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - certbot_conf:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    # Reload every 6h so renewed certificates are picked up without downtime.
+    command: >-
+      /bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done &
+      exec /docker-entrypoint.sh nginx -g "daemon off;"'
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: *default-logging
+
+  certbot:
+    image: certbot/certbot:v2.11.0
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL in .env}
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # On first boot: creates a self-signed fallback cert if none exists so nginx starts,
+    # then requests the real Let's Encrypt certificate, and renews twice a day.
+    entrypoint: >-
+      /bin/sh -c '
+      trap exit TERM;
+      if [ ! -f /etc/letsencrypt/live/$${DOMAIN}/fullchain.pem ]; then
+        mkdir -p /etc/letsencrypt/live/$${DOMAIN};
+        openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+          -keyout /etc/letsencrypt/live/$${DOMAIN}/privkey.pem \
+          -out /etc/letsencrypt/live/$${DOMAIN}/fullchain.pem \
+          -subj "/CN=localhost";
+      fi;
+      sleep 10;
+      if grep -q "localhost" /etc/letsencrypt/live/$${DOMAIN}/fullchain.pem 2>/dev/null; then
+        certbot certonly --webroot -w /var/www/certbot -d $${DOMAIN} --email $${LETSENCRYPT_EMAIL} --agree-tos --no-eff-email --non-interactive || true;
+      fi;
+      while :; do
+        certbot renew --webroot -w /var/www/certbot --quiet;
+        sleep 12h & wait $${!};
+      done'
+    logging: *default-logging
+
+  api:
+    image: ${DOCKERHUB_USERNAME:?Set DOCKERHUB_USERNAME in .env or environment}/sonara-api:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      API_PORT: "8080"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      COOKIE_SECURE: "true"
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?Set TOKEN_ENCRYPTION_KEY in .env}
+      DATABASE_URL: postgres://${POSTGRES_USER:-sonara}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sonara}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      SPOTIFY_DEFAULT_MARKET: ${SPOTIFY_DEFAULT_MARKET:-IN}
+      LRCLIB_API_URL: ${LRCLIB_API_URL:-https://lrclib.net/api}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    logging: *default-logging
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sonara}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sonara}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Persist to disk, cap memory, and only ever evict keys that have a TTL.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  certbot_conf:
+  certbot_www:

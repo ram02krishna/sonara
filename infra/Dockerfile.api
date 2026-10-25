@@ -1,24 +1,43 @@
-# Multi-stage Dockerfile for Go API
+# ------------------------------------------------------------------------------
+# Sonara API (Go). Build context = repository root:
+#   docker build -f infra/Dockerfile.api -t sonara-api .
+# The API creates/updates its own schema on start (EnsureSchema), so there is no
+# migrations folder to ship.
+# ------------------------------------------------------------------------------
 FROM golang:1.22-alpine AS builder
-
-WORKDIR /app
 
 RUN apk add --no-cache git ca-certificates tzdata
 
-COPY apps/api/go.mod apps/api/go.sum* ./apps/api/
-WORKDIR /app/apps/api
-RUN go mod download
+WORKDIR /src/apps/api
+
+# Dependencies first so this layer is cached until go.mod/go.sum change.
+COPY apps/api/go.mod apps/api/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY apps/api/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /sonara-api ./cmd/server
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sonara-api ./cmd/server
 
-FROM alpine:3.19 AS runner
+
+FROM alpine:3.20 AS runner
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 10001 sonara \
+    && adduser -S -u 10001 -G sonara sonara
+
 WORKDIR /app
-RUN apk add --no-cache ca-certificates tzdata curl
-COPY --from=builder /sonara-api /app/sonara-api
-COPY apps/api/migrations /app/migrations
+COPY --from=builder /out/sonara-api /app/sonara-api
+
+ENV APP_ENV=production \
+    API_PORT=8080
 
 EXPOSE 8080
 USER 10001:10001
+
+# busybox wget ships with alpine, so no extra packages are needed for the check.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=5 \
+    CMD wget -qO /dev/null http://127.0.0.1:8080/healthz || exit 1
 
 ENTRYPOINT ["/app/sonara-api"]

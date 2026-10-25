@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "gen": "openapi-typescript sonara-api.yaml -o ../../apps/web/src/types/api.ts"
+    "gen": "openapi-typescript sonara-api.yaml -o ../../apps/web/src/types/openapi.ts"
   },
   "devDependencies": {
     "openapi-typescript": "^7.4.0"

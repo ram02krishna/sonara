@@ -1,0 +1,28 @@
+# Keep the Docker build context small and, more importantly, stop host artefacts
+# (node_modules, .next, secrets) from leaking into images via `COPY . .`.
+.git
+.github
+**/node_modules
+**/.next
+**/.turbo
+**/*.tsbuildinfo
+apps/api/bin
+apps/api/tmp
+
+# Secrets never go into an image
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Not needed to build either image
+infra/aws
+docs
+*.md
+Makefile
+.vscode
+.idea
+.DS_Store
+postgres_data
+redis_data

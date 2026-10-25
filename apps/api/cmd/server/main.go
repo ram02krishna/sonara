@@ -145,8 +145,18 @@ func main() {
 	}
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: allowedOrigins,
+		// AllowOriginFunc takes precedence over AllowedOrigins in rs/cors, so it must also
+		// honour the configured ALLOWED_ORIGINS list or that setting would have no effect.
 		AllowOriginFunc: func(r *http.Request, origin string) bool {
-			return strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")
+			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
+				return true
+			}
+			for _, o := range allowedOrigins {
+				if strings.EqualFold(o, origin) {
+					return true
+				}
+			}
+			return false
 		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},

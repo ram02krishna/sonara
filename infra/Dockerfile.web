@@ -1,38 +1,51 @@
-# Multi-stage Dockerfile for Next.js App
+# ------------------------------------------------------------------------------
+# Sonara web (Next.js, standalone output). Build context = repository root:
+#   docker build -f infra/Dockerfile.web -t sonara-web .
+# Used by the local docker-compose stack. In production the web app is hosted on
+# Vercel (see docs/DEPLOYMENT.md), but this image works anywhere Docker does.
+# ------------------------------------------------------------------------------
 FROM node:20-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache libc6-compat
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/
-COPY packages/api-spec/package.json* ./packages/api-spec/
+COPY packages/api-spec/package.json ./packages/api-spec/
 RUN npm ci
+
 
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Next bakes rewrites in at build time: point /api/v1 at the API container on the compose network.
+
+# Next bakes rewrites in at build time: point /api/v1 at wherever the API lives.
+# Default is the `api` service on the docker-compose network.
 ARG API_INTERNAL_URL=http://api:8080/api/v1
-ENV API_INTERNAL_URL=$API_INTERNAL_URL
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
+ENV API_INTERNAL_URL=$API_INTERNAL_URL \
+    NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=production \
+    NEXT_OUTPUT=standalone
 RUN npm run build --workspace=apps/web
+
 
 FROM node:20-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/apps/web/public ./apps/web/public
-COPY --from=builder /app/apps/web/.next ./apps/web/.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/web/package.json ./apps/web/package.json
-COPY --from=builder /app/package.json ./package.json
+# Standalone output contains only the files and node_modules the server needs.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
 
 USER nextjs
 EXPOSE 3000
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
 
-CMD ["npm", "start", "--workspace=apps/web"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -qO /dev/null http://127.0.0.1:3000/ || exit 1
+
+CMD ["node", "apps/web/server.js"]

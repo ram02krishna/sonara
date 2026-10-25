@@ -1,4 +1,4 @@
-.PHONY: help dev build lint test docker-up docker-down docker-logs migrate-up migrate-down gen-spec
+.PHONY: help dev build lint test docker-up docker-down docker-logs docker-build migrate-up migrate-down gen-spec
 
 help:
 	@echo "Sonara - Music Streaming Monorepo"
@@ -13,6 +13,7 @@ help:
 	@echo "  make docker-up    - Spin up full stack (web, api, postgres, redis) via Docker Compose"
 	@echo "  make docker-down  - Stop all Docker Compose containers"
 	@echo "  make docker-logs  - Stream Docker Compose logs"
+	@echo "  make docker-build - Build the API and web Docker images (checks the Dockerfiles before you push)"
 	@echo "  make migrate-up   - Apply database migrations"
 	@echo "  make migrate-down - Rollback database migrations"
 	@echo "  make gen-spec     - Generate TypeScript & Go code from OpenAPI spec"
@@ -48,6 +49,10 @@ docker-down:
 
 docker-logs:
 	docker compose -f infra/docker-compose.yml logs -f
+
+docker-build:
+	docker build -f infra/Dockerfile.api -t sonara-api:local .
+	docker build -f infra/Dockerfile.web -t sonara-web:local .
 
 gen-spec:
 	npm run gen --workspace=packages/api-spec
