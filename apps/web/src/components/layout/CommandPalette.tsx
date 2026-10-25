@@ -196,6 +196,7 @@ export function CommandPalette() {
                   className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-foreground/10 cursor-pointer transition-colors group"
                 >
                   <div className="flex items-center gap-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={track.album?.images?.[0]?.url || ""}
                       alt=""

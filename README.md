@@ -155,6 +155,23 @@ npm run dev:api
 npm run dev
 ```
 
+---
+
+### Deploying the Web Frontend to Vercel
+
+Sonara's web frontend is fully optimized for Vercel deployment:
+
+1. **Import the repository into Vercel**:
+   - You can leave **Root Directory** as the repository root (Vercel will detect [vercel.json](file:///d:/WorkSpace/sonara/vercel.json) automatically) OR set it to `apps/web`.
+2. **Environment Variables**:
+   In your Vercel Project Settings -> **Environment Variables**, add:
+   - `API_INTERNAL_URL`: URL of your deployed Go backend API (e.g. `https://api.yourdomain.com`). The Next.js frontend proxies `/api/v1` requests to this backend so that HTTP-only session cookies and authentication work out of the box.
+   - `NEXT_PUBLIC_APP_URL`: Your Vercel frontend URL (e.g. `https://sonara.vercel.app`).
+3. **Backend CORS / Cookie configuration**:
+   On your Go API deployment (Fly.io, Railway, Render, VPS, or Docker container), set:
+   - `COOKIE_SECURE=true` (since Vercel serves over HTTPS)
+   - `ALLOWED_ORIGINS=https://sonara.vercel.app`
+
 ## Tests
 
 ```bash

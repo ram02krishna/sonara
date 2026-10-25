@@ -181,6 +181,7 @@ export function FullScreenPlayer() {
                 : "shadow-[0_24px_60px_rgba(0,0,0,0.9)] border border-white/10 bg-black/40"
             )}
           >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={currentTrack.album?.images?.[0]?.url || ""}
               alt={currentTrack.name}

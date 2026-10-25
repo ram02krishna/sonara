@@ -1,0 +1,19 @@
+# Git & CI
+.git
+.github
+
+# Backend & Infra
+apps/api
+infra
+scripts
+Makefile
+
+# Data and logs
+*.log
+postgres_data
+redis_data
+
+# Local environment secrets
+.env
+.env*.local
+.env.production
