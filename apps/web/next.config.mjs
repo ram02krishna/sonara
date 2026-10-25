@@ -10,9 +10,9 @@ const getApiDestination = () => {
   // proxy every /api/v1 call to localhost and the deployed site would be broken,
   // so fail the build with a clear message instead.
   if (process.env.VERCEL && !configured) {
-    throw new Error(
-      'API_INTERNAL_URL is not set. In Vercel go to Project > Settings > Environment Variables and set it ' +
-        'to your public API URL, e.g. https://api.example.com (see docs/DEPLOYMENT.md).'
+    console.warn(
+      '⚠️ API_INTERNAL_URL is not set. Go to Vercel Project > Settings > Environment Variables and set it ' +
+        'to your public API URL (e.g. your Render backend URL).'
     );
   }
 
