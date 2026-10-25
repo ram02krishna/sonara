@@ -23,8 +23,7 @@ type LyricsProvider interface {
 	GetLyrics(ctx context.Context, trackName, artistName string, durationMs int) (*models.Lyrics, error)
 }
 
-// PreviewProvider finds a playable 30s audio preview for a track. Spotify no
-// longer returns preview_url to most apps, so previews come from iTunes.
+// PreviewProvider finds a playable 30s audio preview for a track.
 type PreviewProvider interface {
 	FindPreview(ctx context.Context, trackName, artistName string) (string, error)
 }

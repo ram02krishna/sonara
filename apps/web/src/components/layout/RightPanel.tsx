@@ -7,7 +7,7 @@ import { usePlayerStore, RightPanelTab } from "@/store/usePlayerStore";
 import { useAppStore } from "@/store/useAppStore";
 import { useArtist, useCollectionToggle, useLyrics } from "@/hooks/useSonara";
 import { usePlayTrack } from "@/hooks/usePlayTrack";
-import { Cover, TrackRow } from "@/components/ui/media";
+import { Cover } from "@/components/ui/media";
 import { cn, formatDuration } from "@/lib/utils";
 
 const TABS: { id: Exclude<RightPanelTab, null>; label: string; icon: React.ElementType }[] = [

@@ -27,7 +27,6 @@ func (h *LyricsHandler) GetLyrics(w http.ResponseWriter, r *http.Request) {
 
 	lyrics, err := h.lyricsClient.GetLyrics(r.Context(), trackName, artistName, durationMs)
 	if err != nil || lyrics == nil {
-		// No fabricated lyrics: tell the UI honestly so it can show "No lyrics found".
 		writeError(w, http.StatusNotFound, "lyrics_not_found", "No lyrics found for this track.")
 		return
 	}

@@ -58,7 +58,7 @@ export default function OnboardingPage() {
   }, [artistQuery]);
 
   const { data: found, isFetching } = useSearch(debounced, "artist");
-  const toggle = (list: string[], set: (v: string[]) => void, v: string) =>
+  const toggle = (list: string[], set: (items: string[]) => void, v: string) =>
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
   const totalSelected = languages.length + genres.length + artists.length;

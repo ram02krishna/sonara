@@ -70,8 +70,6 @@ export async function extractDominantColor(imageUrl?: string): Promise<Extracted
         b = Math.round(b / count);
 
         // Boost saturation slightly for vibrant feel
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
         let [h, s, l] = rgbToHsl(r, g, b);
         s = Math.min(1, s * 1.35); // Boost saturation
         l = Math.max(0.4, Math.min(0.65, l)); // Ensure good contrast

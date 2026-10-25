@@ -33,9 +33,7 @@ type cachedTrack struct {
 	expires time.Time
 }
 
-// SpotifyProvider is Sonara's read-only catalogue source. Sonara never asks
-// anyone to log in with Spotify: it authenticates as an application
-// (client-credentials flow, client ID + secret) and reads public catalogue data.
+// SpotifyProvider fetches public catalogue metadata using client credentials.
 type SpotifyProvider struct {
 	clientID      string
 	clientSecret  string

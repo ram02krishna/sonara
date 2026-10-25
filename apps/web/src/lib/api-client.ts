@@ -1,9 +1,4 @@
-/**
- * Sonara API client. All calls go to same-origin /api/v1 (proxied to the Go API by
- * next.config.mjs), so the httpOnly session cookie is always sent and no token is
- * ever stored in JavaScript-readable storage.
- */
-
+// API client for /api/v1 proxy
 const API_BASE = "/api/v1";
 
 type Params = Record<string, string | number | boolean | undefined | null>;

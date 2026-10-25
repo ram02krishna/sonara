@@ -1,0 +1,143 @@
+// Sonara Database Schema for Prisma ORM
+// Fully synchronized with infra/postgres/init.sql
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Users Table (Native Sonara Accounts)
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @default("") @map("password_hash") @db.VarChar(255)
+  displayName  String    @map("display_name") @db.VarChar(255)
+  avatarUrl    String?   @default("") @map("avatar_url") @db.Text
+  bio          String?   @default("") @db.Text
+  product      String?   @default("premium") @db.VarChar(64)
+  country      String?   @default("US") @db.VarChar(8)
+  createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sessions     Session[]
+  playHistory  PlayHistory[]
+  playlists    Playlist[]
+  preferences  UserPreference?
+  library      UserLibrary[]
+
+  @@index([email], map: "idx_users_email")
+  @@map("users")
+}
+
+// Sessions Table (for active sessions / cookie validation)
+model Session {
+  id        String    @id @db.VarChar(128)
+  userId    String    @map("user_id") @db.Uuid
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_sessions_user_id")
+  @@map("sessions")
+}
+
+// Listening History Table (Powers Sonara stats dashboard, listening hours, streaks)
+model PlayHistory {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  trackId     String    @map("track_id") @db.VarChar(128)
+  trackName   String    @map("track_name") @db.VarChar(255)
+  artistName  String    @map("artist_name") @db.VarChar(255)
+  albumName   String    @map("album_name") @db.VarChar(255)
+  albumArtUrl String?   @map("album_art_url") @db.Text
+  durationMs  Int       @default(0) @map("duration_ms")
+  listenedMs  Int       @default(0) @map("listened_ms")
+  playedAt    DateTime? @default(now()) @map("played_at") @db.Timestamptz(6)
+  source      String?   @default("spotify") @db.VarChar(64)
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_play_history_user_id")
+  @@index([playedAt(sort: Desc)], map: "idx_play_history_played_at")
+  @@map("play_history")
+}
+
+// Sonara User Playlists (Custom or synced playlists)
+model Playlist {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String         @map("user_id") @db.Uuid
+  spotifyPlaylistId String?        @map("spotify_playlist_id") @db.VarChar(128)
+  name              String         @db.VarChar(255)
+  description       String?        @db.Text
+  coverUrl          String?        @map("cover_url") @db.Text
+  isPublic          Boolean?       @default(true) @map("is_public")
+  isCollaborative   Boolean?       @default(false) @map("is_collaborative")
+  moodTag           String?        @map("mood_tag") @db.VarChar(64)
+  createdAt         DateTime?      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime?      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items             PlaylistItem[]
+
+  @@index([userId], map: "idx_playlists_user_id")
+  @@map("playlists")
+}
+
+// Playlist Items
+model PlaylistItem {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playlistId String    @map("playlist_id") @db.Uuid
+  trackId    String    @map("track_id") @db.VarChar(128)
+  trackName  String    @map("track_name") @db.VarChar(255)
+  artistName String    @map("artist_name") @db.VarChar(255)
+  albumName  String    @map("album_name") @db.VarChar(255)
+  durationMs Int       @default(0) @map("duration_ms")
+  position   Int       @default(0)
+  addedAt    DateTime? @default(now()) @map("added_at") @db.Timestamptz(6)
+
+  playlist   Playlist  @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, trackId])
+  @@index([playlistId], map: "idx_playlist_items_playlist_id")
+  @@map("playlist_items")
+}
+
+// Per-user taste preferences (languages, genres, artists, country)
+model UserPreference {
+  userId    String    @id @map("user_id") @db.Uuid
+  languages String[]  @default([])
+  genres    String[]  @default([])
+  artists   Json      @default("[]")
+  country   String    @default("") @db.VarChar(8)
+  onboarded Boolean   @default(false)
+  updatedAt DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// User Liked Tracks / Library
+model UserLibrary {
+  userId      String    @map("user_id") @db.Uuid
+  trackUri    String    @map("track_uri") @db.VarChar(255)
+  trackId     String    @default("") @map("track_id") @db.VarChar(128)
+  trackName   String    @default("") @map("track_name") @db.VarChar(255)
+  artistName  String    @default("") @map("artist_name") @db.VarChar(255)
+  albumName   String    @default("") @map("album_name") @db.VarChar(255)
+  albumArtUrl String?   @default("") @map("album_art_url") @db.Text
+  previewUrl  String?   @default("") @map("preview_url") @db.Text
+  durationMs  Int       @default(0) @map("duration_ms")
+  addedAt     DateTime? @default(now()) @map("added_at") @db.Timestamptz(6)
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, trackUri])
+  @@index([userId, addedAt(sort: Desc)], map: "idx_user_library_added")
+  @@map("user_library")
+}

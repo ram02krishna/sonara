@@ -40,13 +40,7 @@ function loadYouTube(): Promise<void> {
   return ytLoader;
 }
 
-/**
- * The one place audio is produced.
- *  - preview: a real 30-second clip in an <audio> element (iTunes preview).
- *  - video:   a full song in YouTube's own VISIBLE embedded player (official Data
- *             API lookup, optional, enabled in Settings); never scraped or hidden.
- * It renders no UI itself.
- */
+// Audio and video playback engine
 export function PlaybackEngine() {
   const qc = useQueryClient();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -54,7 +48,6 @@ export function PlaybackEngine() {
   const pendingVideo = useRef<string | null>(null);
   const modeRef = useRef<"idle" | "preview" | "video">("idle");
   const recorded = useRef<string | null>(null);
-  const warnedNoVideo = useRef(false);
 
   const { data: config } = useAppConfig();
   const { data: session } = useSession();
@@ -64,8 +57,7 @@ export function PlaybackEngine() {
 
   const settings = useAppStore((s) => s.settings);
   const addToast = useAppStore((s) => s.addToast);
-  // Logged-in users ALWAYS play full songs (never preview).
-  // Guests are restricted to 30s previews.
+  // Full songs for logged-in users; 30s preview for guests
   const shouldPlayFullSong = isLoggedIn;
 
   const track = usePlayerStore((s) => s.currentTrack);
@@ -79,7 +71,7 @@ export function PlaybackEngine() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
-  /* ---------------------------- track finished ---------------------------- */
+  // On track end
   const handleEnded = useCallback(async () => {
     const st = usePlayerStore.getState();
     if (st.sleepAfterTrack) {
@@ -102,7 +94,7 @@ export function PlaybackEngine() {
   const endedRef = useRef(handleEnded);
   endedRef.current = handleEnded;
 
-  /* ------------------------------ video engine ----------------------------- */
+  // Video engine
   const ensureYt = useCallback(async () => {
     await loadYouTube();
     if (ytRef.current) return ytRef.current;
@@ -139,8 +131,7 @@ export function PlaybackEngine() {
           const t = usePlayerStore.getState().currentTrack;
           if (!t) return;
 
-          // For logged-in users, NEVER downgrade to 30s preview.
-          // Retry with an alternate audio query:
+          // Retry alternate query for logged-in users
           if (isLoggedInRef.current) {
             try {
               const cleanArtist = (t.artists?.[0]?.name || "").split(/[,&/]/)[0].trim();
@@ -159,7 +150,7 @@ export function PlaybackEngine() {
             return;
           }
 
-          // Guest users fallback to preview
+          // Guest fallback
           addToast({ title: "Playing preview", description: "Sign in to play complete full-length songs.", type: "info" });
           void startPreview(t);
         },
@@ -188,7 +179,7 @@ export function PlaybackEngine() {
     else pendingVideo.current = videoId; // player still initialising: onReady will load it
   };
 
-  /* ----------------------------- preview engine ---------------------------- */
+  // Preview engine
   const startPreview = async (t: Track) => {
     try {
       ytRef.current?.pauseVideo?.();
@@ -221,7 +212,7 @@ export function PlaybackEngine() {
     if (usePlayerStore.getState().isPlaying) audio.play().catch(() => usePlayerStore.getState().setIsPlaying(false));
   };
 
-  // Pre-warm YouTube iframe API and player immediately on mount so songs start with zero delay
+  // Pre-warm YouTube player
   useEffect(() => {
     if (shouldPlayFullSong) {
       void loadYouTube().then(() => {
@@ -230,7 +221,7 @@ export function PlaybackEngine() {
     }
   }, [shouldPlayFullSong, ensureYt]);
 
-  // Pre-fetch video ID for the upcoming track in the queue so next track transitions seamlessly
+  // Prefetch next video in queue
   const queue = usePlayerStore((s) => s.queue);
   useEffect(() => {
     if (!shouldPlayFullSong || !queue || queue.length === 0) return;
@@ -243,7 +234,7 @@ export function PlaybackEngine() {
     });
   }, [queue, shouldPlayFullSong, qc]);
 
-  /* ------------------------ react to the current track --------------------- */
+  // Current track changes
   useEffect(() => {
     if (!track) {
       audioRef.current?.pause();
@@ -315,7 +306,7 @@ export function PlaybackEngine() {
         return;
       }
 
-      // Guest users: play 30s preview
+      // Guest preview
       if (!cancelled) await startPreview(track);
     })();
     return () => {
@@ -329,7 +320,7 @@ export function PlaybackEngine() {
     if (!shouldPlayFullSong) destroyVideo();
   }, [shouldPlayFullSong, destroyVideo]);
 
-  /* ---------------------------- play / pause / seek ------------------------ */
+  // Play, pause, volume, and seek controls
   useEffect(() => {
     if (modeRef.current === "video") {
       try {
@@ -377,7 +368,7 @@ export function PlaybackEngine() {
     });
   }, [destroyVideo]);
 
-  // Video progress: YouTube doesn't emit time updates, so poll while playing.
+  // Poll video progress
   useEffect(() => {
     if (engine !== "video") return;
     const id = setInterval(() => {
@@ -394,7 +385,7 @@ export function PlaybackEngine() {
     return () => clearInterval(id);
   }, [engine]);
 
-  /* ------------------------------ sleep timer ----------------------------- */
+  // Sleep timer
   useEffect(() => {
     const id = setInterval(() => {
       const st = usePlayerStore.getState();
@@ -407,7 +398,7 @@ export function PlaybackEngine() {
     return () => clearInterval(id);
   }, [addToast]);
 
-  /* ------------------- count a play after 15 seconds of listening --------- */
+  // Record play history after 15s
   useEffect(() => {
     if (!track || !isPlaying || progressMs < 15000 || recorded.current === track.id) return;
     recorded.current = track.id;
@@ -422,7 +413,7 @@ export function PlaybackEngine() {
       .catch(() => undefined);
   }, [progressMs, isPlaying, track, engine, qc]);
 
-  /* ----------------------- media keys & lock-screen controls --------------- */
+  // Media session controls
   useEffect(() => {
     if (!track || typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -446,7 +437,7 @@ export function PlaybackEngine() {
         if (modeRef.current === "preview") usePlayerStore.getState().setProgressMs(Math.round(e.currentTarget.currentTime * 1000));
       }}
       onLoadedMetadata={(e) => {
-        // A preview is a ~30s clip: show ITS length so the progress bar is honest.
+        // Duration from loaded audio
         const d = e.currentTarget.duration;
         if (modeRef.current === "preview" && Number.isFinite(d) && d > 0) usePlayerStore.setState({ durationMs: Math.round(d * 1000) });
       }}

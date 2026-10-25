@@ -31,7 +31,6 @@ export function FullScreenPlayer() {
     isPlaying,
     setIsPlaying,
     progressMs,
-    setProgressMs,
     durationMs,
     volume,
     setVolume,

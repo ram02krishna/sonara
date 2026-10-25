@@ -14,20 +14,17 @@ import {
   X,
   Library,
   BarChart2,
-  Heart,
 } from "lucide-react";
 import { useAppStore } from "@/store/useAppStore";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { useSearch } from "@/hooks/useSonara";
 import { useUiStore } from "@/store/useUiStore";
-import { cn } from "@/lib/utils";
 
 export function CommandPalette() {
   const router = useRouter();
   const { commandPaletteOpen, setCommandPaletteOpen, setMood, toggleTheme, theme } = useAppStore();
   const { setCurrentTrack, setIsPlaying, isPlaying, playNext } = usePlayerStore();
   const [query, setQuery] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 300);
@@ -167,10 +164,7 @@ export function CommandPalette() {
             type="text"
             placeholder="Type a command, track, or mood..."
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setSelectedIndex(0);
-            }}
+            onChange={(e) => setQuery(e.target.value)}
             className="flex-1 bg-transparent border-none outline-none text-foreground text-sm placeholder:text-muted-foreground"
           />
           <button

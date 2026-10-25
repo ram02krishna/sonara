@@ -11,7 +11,7 @@ import { usePlayTrack } from "@/hooks/usePlayTrack";
 import { useTrackLiked } from "@/hooks/useSonara";
 import { cn, formatDuration } from "@/lib/utils";
 
-/* ------------------------------- primitives ------------------------------- */
+// Primitives
 
 export function Cover({ src, alt, className, round }: { src?: string; alt: string; className?: string; round?: boolean }) {
   return (
@@ -132,7 +132,7 @@ const artistLinks = (t: Track) =>
     </React.Fragment>
   ));
 
-/* --------------------------------- cards ---------------------------------- */
+// Cards
 
 /** Compact home tile (Spotify style): small cover + title, plays on click. */
 export function QuickPlayCard({ title, image, onPlay, href, active }: { title: string; image?: string; onPlay?: () => void; href?: string; active?: boolean }) {
@@ -215,7 +215,7 @@ export function PlaylistCard({ playlist }: { playlist: UserPlaylist }) {
   );
 }
 
-/* ---------------------------------- rows ---------------------------------- */
+// Rows
 
 export function TrackRow({
   track,
@@ -292,7 +292,7 @@ export function TrackRow({
   );
 }
 
-/* -------------------------------- feedback -------------------------------- */
+// Feedback & skeletons
 
 export function ShelfSkeleton({ rounded }: { rounded?: boolean }) {
   return (

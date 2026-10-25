@@ -2,18 +2,12 @@
 
 import React, { useEffect } from "react";
 import { X } from "lucide-react";
-import { useAppConfig } from "@/hooks/useSonara";
 import { useAppStore } from "@/store/useAppStore";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { playback } from "@/lib/playback";
-
 import { cn } from "@/lib/utils";
 
-/**
- * YouTube embedded video player host.
- * Stays mounted to stream full-length songs continuously in the background.
- * The video card can be shown or hidden at any time without interrupting the song.
- */
+// Embedded YouTube video player host
 export function VideoDock() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);

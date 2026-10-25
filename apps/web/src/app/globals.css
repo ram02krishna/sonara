@@ -200,9 +200,7 @@ button,
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Accent themes: the whole UI follows --primary / --primary-2.       */
-/* ------------------------------------------------------------------ */
+/* Accent themes */
 :root {
   --primary-2: 187 94% 43%; /* gradient partner (cyan) */
   --row-py: 0.625rem;

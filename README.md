@@ -164,19 +164,18 @@ behind **nginx** (HTTPS via Let's Encrypt), all as Docker containers. Every push
 the code, builds the API Docker image, pushes it to Docker Hub, and automatically pulls and updates the EC2 server (no AWS ECR required).
 Vercel redeploys the web app on the same push.
 
-**Full step-by-step guide: [DEPLOYMENT.md](DEPLOYMENT.md)**
+**Full step-by-step guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
 Quick reference for the Vercel side (set the project's **Root Directory to `apps/web`**):
 - `API_INTERNAL_URL` = your public API URL, e.g. `https://api.yourdomain.com`. The Next.js app proxies `/api/v1` to it, so the HTTP-only
   session cookie stays first-party. It is read at build time; the build fails with a clear message if it is missing.
 - On the API server set `COOKIE_SECURE=true` and `ALLOWED_ORIGINS=https://your-app.vercel.app` (the production compose file already does the former).
 
-## Tests
+## Verification & Tests
 
 ```bash
-cd apps/api && go test ./...                 # provider, dashboard, auth/security, repository unit tests
-API_BASE=http://127.0.0.1:8080/api/v1 python3 scripts/e2e_api.py   # 47-step scenario against a running API + PostgreSQL
-cd apps/web && npm run build                 # lint + type-check + compile
+cd apps/api && go test ./...                 # Go API tests
+cd apps/web && npm run build                 # Next.js web lint + type-check + build
 ```
 
 ## Project structure
@@ -187,11 +186,12 @@ apps/web/src/components   layout (Sidebar, Header, RightPanel), player (Playback
 apps/web/src/hooks        data hooks (TanStack Query), play helpers
 apps/web/src/store        Zustand: player, app settings, UI (menus/dialogs)
 apps/api/internal         handler, repository, provider (Spotify, iTunes, LRCLIB, YouTube), dashboard, service
+packages/db               Prisma ORM schema and client for PostgreSQL
+packages/api-spec         OpenAPI specification and generated types
 infra/                    docker-compose (local), Dockerfiles, postgres/init.sql
 infra/aws/                production stack: compose, nginx, deploy + TLS scripts, .env.example
-.github/workflows/        ci.yml (checks) and deploy.yml (build -> ECR -> EC2)
+.github/workflows/        ci.yml (checks) and deploy.yml (build -> Docker Hub -> EC2)
 docs/DEPLOYMENT.md        Vercel + AWS deployment guide
-scripts/e2e_api.py        end-to-end API scenario
 ```
 
 ## Notes on music rights

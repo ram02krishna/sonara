@@ -29,7 +29,7 @@ const retryUnlessClientError = (count: number, err: unknown) =>
 
 const q = { retry: retryUnlessClientError } as const;
 
-/* ---------------------------------- auth ---------------------------------- */
+// Auth
 
 export function useSession() {
   return useQuery({
@@ -76,7 +76,7 @@ export function useAppConfig() {
   return useQuery({ queryKey: ["config"], queryFn: () => apiFetch<AppConfig>("/config"), staleTime: Infinity, retry: 1 });
 }
 
-/* -------------------------------- account --------------------------------- */
+// Account
 
 export function useUpdateProfile() {
   const qc = useQueryClient();
@@ -115,7 +115,7 @@ export function useClearHistory() {
   });
 }
 
-/* ---------------------------- taste & dashboard --------------------------- */
+// Dashboard & preferences
 
 export function useDashboard(enabled = true) {
   return useQuery({
@@ -143,7 +143,7 @@ export function useSavePreferences() {
   });
 }
 
-/* --------------------------------- catalogue ------------------------------- */
+// Catalog
 
 /** The single search hook used by the header, command palette and /search page. */
 export function useSearch(query: string, type?: string, offset = 0) {
@@ -218,7 +218,7 @@ export function useVideo(track: Track | null, enabled: boolean) {
   });
 }
 
-/* ------------------------- your listening on Sonara ----------------------- */
+// History & stats
 
 export function useRecentlyPlayed(enabled = true) {
   return useQuery({
@@ -251,7 +251,7 @@ export function useStats(range: string, enabled = true) {
   return useQuery({ queryKey: ["stats", range], queryFn: () => apiFetch<StatsReport>("/stats", { params: { range } }), enabled, ...q });
 }
 
-/* --------------------------------- library -------------------------------- */
+// Library
 
 export function useSavedTracks(enabled = true) {
   return useQuery({
@@ -330,7 +330,7 @@ export function useCollectionToggle(kind: "artist" | "album") {
   });
 }
 
-/* -------------------------------- playlists -------------------------------- */
+// Playlists
 
 export function usePlaylists(enabled = true) {
   return useQuery({
@@ -385,7 +385,7 @@ export function usePlaylistActions() {
   };
 }
 
-/* ---------------------------------- errors -------------------------------- */
+// Error helpers
 
 /** Human-friendly message for an API failure (never raw JSON). */
 export function friendlyError(err: unknown): { title: string; detail: string; needsLogin: boolean } {

@@ -2,11 +2,11 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Download, Keyboard, Loader2, LogOut, Monitor, Moon, Palette, PlayCircle, ShieldCheck, Sun, Trash2, User, Globe, Sparkles } from "lucide-react";
+import { Check, Download, Keyboard, LogOut, Monitor, Moon, Palette, PlayCircle, ShieldCheck, Sun, Trash2, User, Globe, Sparkles } from "lucide-react";
 import { ACCENTS, Accent, Density, ThemePref, useAppStore } from "@/store/useAppStore";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import {
-  friendlyError, useAppConfig, useChangePassword, useClearHistory, useDeleteAccount, useLogout, usePreferences, useSavePreferences, useUpdateProfile, useUpgradeGuest,
+  friendlyError, useChangePassword, useClearHistory, useDeleteAccount, useLogout, usePreferences, useSavePreferences, useUpdateProfile, useUpgradeGuest,
 } from "@/hooks/useSonara";
 import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/utils";
@@ -47,7 +47,6 @@ export default function SettingsPage() {
   const router = useRouter();
   const { settings, updateSettings, resetSettings, user, isGuest, addToast, setShortcutsOpen } = useAppStore();
   const openConfirm = useUiStore((s) => s.openConfirm);
-  const { data: config } = useAppConfig();
   const { data: prefs } = usePreferences();
   const savePrefs = useSavePreferences();
   const updateProfile = useUpdateProfile();

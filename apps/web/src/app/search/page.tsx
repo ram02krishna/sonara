@@ -2,7 +2,7 @@
 
 import React, { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Clock, Loader2, Play, Search as SearchIcon, X } from "lucide-react";
+import { Clock, Loader2, Play, Search as SearchIcon } from "lucide-react";
 import { friendlyError, useBrowseCategories, useSearch } from "@/hooks/useSonara";
 import { usePlayTrack } from "@/hooks/usePlayTrack";
 import { AlbumCard, ArtistCard, Cover, EmptyState, ErrorState, RowSkeleton, SectionHeader, TrackRow, useVisible } from "@/components/ui/media";

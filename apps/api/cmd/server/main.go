@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	// Setup structured zerolog
+	// Logger
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	if os.Getenv("APP_ENV") != "production" {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"})
@@ -37,7 +37,7 @@ func main() {
 
 	cfg := config.Load()
 
-	// Initialize Database Pool (with graceful fallback if not yet running)
+	// Database pool
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -60,7 +60,7 @@ func main() {
 		}
 	}
 
-	// Initialize Redis
+	// Redis
 	var rdb *redis.Client
 	opt, err := redis.ParseURL(cfg.RedisURL)
 	if err == nil {
@@ -73,7 +73,7 @@ func main() {
 		}
 	}
 
-	// Providers & Repositories
+	// Repositories
 	ctxBG := context.Background()
 	userRepo := repository.NewUserRepository(dbPool)
 	historyRepo := repository.NewHistoryRepository(dbPool)
@@ -81,7 +81,7 @@ func main() {
 	libraryRepo := repository.NewLibraryRepository(dbPool)
 	collectionRepo := repository.NewCollectionRepository(dbPool)
 	playlistRepo := repository.NewPlaylistRepository(dbPool)
-	// Order matters: users first (other tables reference it).
+	// Schema init (users first)
 	for _, step := range []struct {
 		name string
 		fn   func(context.Context) error
@@ -120,7 +120,7 @@ func main() {
 	lyricsHandler := handler.NewLyricsHandler(lrclibClient)
 	statsHandler := handler.NewStatsHandler(historyRepo, musicHandler)
 
-	// Setup Chi Router
+	// Router
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -129,7 +129,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	// CORS configuration: support both localhost and 127.0.0.1 across ports
+	// CORS
 	allowedOrigins := []string{
 		"http://localhost:3000",
 		"http://127.0.0.1:3000",
@@ -145,8 +145,6 @@ func main() {
 	}
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: allowedOrigins,
-		// AllowOriginFunc takes precedence over AllowedOrigins in rs/cors, so it must also
-		// honour the configured ALLOWED_ORIGINS list or that setting would have no effect.
 		AllowOriginFunc: func(r *http.Request, origin string) bool {
 			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
 				return true
@@ -165,25 +163,23 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	// Root status
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"service":"Sonara API","status":"healthy","version":"1.0.0"}`))
 	})
 
-	// Healthcheck
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"healthy","service":"sonara-api"}`))
 	})
 
-	// API V1 Route Group
+	// API routes
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/config", musicHandler.GetConfig)
 
-		// Sonara accounts (rate limited against password guessing)
+		// Auth (rate-limited)
 		api.Group(func(g chi.Router) {
 			g.Use(handler.RateLimit(20, time.Minute))
 			g.Post("/auth/signup", authHandler.Signup)
@@ -203,7 +199,7 @@ func main() {
 		api.Get("/me/preferences", dashboardHandler.GetPreferences)
 		api.Put("/me/preferences", dashboardHandler.PutPreferences)
 
-		// Catalogue
+		// Catalog
 		api.Get("/search", musicHandler.Search)
 		api.Get("/preview", musicHandler.GetPreview)
 		api.Get("/video", musicHandler.GetVideo)
@@ -214,7 +210,7 @@ func main() {
 		api.Get("/dashboard", dashboardHandler.GetDashboard)
 		api.Get("/lyrics", lyricsHandler.GetLyrics)
 
-		// Listening history & insights
+		// History & stats
 		api.Get("/me/recently-played", musicHandler.GetRecentlyPlayed)
 		api.Get("/me/top/tracks", musicHandler.GetTopTracks)
 		api.Get("/me/top/artists", musicHandler.GetTopArtists)
@@ -245,7 +241,7 @@ func main() {
 		api.Delete("/playlists/{id}/tracks/{trackId}", musicHandler.RemovePlaylistTrack)
 	})
 
-	// Server Start & Graceful Shutdown
+	// Server
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
 		Addr:         addr,
