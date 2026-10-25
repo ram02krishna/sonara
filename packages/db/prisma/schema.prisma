@@ -19,7 +19,7 @@ model User {
   avatarUrl    String?   @default("") @map("avatar_url") @db.Text
   bio          String?   @default("") @db.Text
   product      String?   @default("premium") @db.VarChar(64)
-  country      String?   @default("US") @db.VarChar(8)
+  country      String?   @default("IN") @db.VarChar(8)
   createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

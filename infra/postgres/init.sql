@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     avatar_url TEXT DEFAULT '',
     bio TEXT DEFAULT '',
     product VARCHAR(64) DEFAULT 'premium', -- Sonara studio master status
-    country VARCHAR(8) DEFAULT 'US',
+    country VARCHAR(8) DEFAULT 'IN',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
