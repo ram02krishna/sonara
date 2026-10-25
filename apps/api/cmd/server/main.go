@@ -165,6 +165,13 @@ func main() {
 		MaxAge:           300,
 	}))
 
+	// Root status
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"service":"Sonara API","status":"healthy","version":"1.0.0"}`))
+	})
+
 	// Healthcheck
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
