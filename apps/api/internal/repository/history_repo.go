@@ -2,42 +2,77 @@ package repository
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sonara/api/internal/models"
+	"gorm.io/gorm"
 )
 
-type HistoryRepository struct {
-	db *pgxpool.Pool
+// dbPlayHistory is the GORM-mapped struct for the play_history table.
+type dbPlayHistory struct {
+	ID          uuid.UUID       `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID      uuid.UUID       `gorm:"column:user_id;type:uuid;not null;index:idx_play_history_user_time,priority:1"`
+	TrackID     string          `gorm:"column:track_id;size:128;not null"`
+	TrackName   string          `gorm:"column:track_name;size:255;not null"`
+	ArtistName  string          `gorm:"column:artist_name;size:255;not null;default:''"`
+	ArtistID    string          `gorm:"column:artist_id;size:64;not null;default:''"`
+	AlbumName   string          `gorm:"column:album_name;size:255;not null;default:''"`
+	AlbumArtURL string          `gorm:"column:album_art_url;default:''"`
+	DurationMs  int             `gorm:"column:duration_ms;not null;default:0"`
+	ListenedMs  int             `gorm:"column:listened_ms;not null;default:0"`
+	Source      string          `gorm:"column:source;size:64;default:'stream'"`
+	TrackJSON   *trackJSONField `gorm:"column:track_json;type:jsonb"`
+	PlayedAt    time.Time       `gorm:"column:played_at;index:idx_play_history_user_time,priority:2,sort:desc;autoCreateTime"`
 }
 
-func NewHistoryRepository(db *pgxpool.Pool) *HistoryRepository {
+func (dbPlayHistory) TableName() string { return "play_history" }
+
+// trackJSONField implements GORM's Scanner/Valuer for JSONB ↔ models.Track.
+type trackJSONField struct {
+	models.Track
+}
+
+func (t *trackJSONField) Scan(val interface{}) error {
+	var b []byte
+	switch v := val.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("trackJSONField: unsupported type %T", val)
+	}
+	return json.Unmarshal(b, &t.Track)
+}
+
+func (t trackJSONField) Value() (driver.Value, error) {
+	b, err := json.Marshal(t.Track)
+	return string(b), err
+}
+
+// HistoryRepository stores and queries play history using GORM.
+type HistoryRepository struct {
+	db *gorm.DB
+}
+
+func NewHistoryRepository(db *gorm.DB) *HistoryRepository {
 	return &HistoryRepository{db: db}
 }
 
-// EnsureSchema adds the listened_ms column for databases created before it existed.
-func (r *HistoryRepository) EnsureSchema(ctx context.Context) error {
+// EnsureSchema auto-migrates the play_history table.
+func (r *HistoryRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	for _, q := range []string{
-		`ALTER TABLE play_history ADD COLUMN IF NOT EXISTS listened_ms INT NOT NULL DEFAULT 0`,
-		`ALTER TABLE play_history ADD COLUMN IF NOT EXISTS artist_id VARCHAR(64) NOT NULL DEFAULT ''`,
-		`ALTER TABLE play_history ADD COLUMN IF NOT EXISTS track_json JSONB`,
-		`CREATE INDEX IF NOT EXISTS idx_play_history_user_time ON play_history(user_id, played_at DESC)`,
-	} {
-		if _, err := r.db.Exec(ctx, q); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.db.AutoMigrate(&dbPlayHistory{})
 }
 
-// RecordPlay stores one real play. listenedMs is how much audio the user could actually hear.
-func (r *HistoryRepository) RecordPlay(ctx context.Context, userID uuid.UUID, track *models.Track, listenedMs int, source string) error {
+// RecordPlay stores one real play. listenedMs is how much audio the user actually heard.
+func (r *HistoryRepository) RecordPlay(_ context.Context, userID uuid.UUID, track *models.Track, listenedMs int, source string) error {
 	if r.db == nil {
 		return nil
 	}
@@ -45,85 +80,104 @@ func (r *HistoryRepository) RecordPlay(ctx context.Context, userID uuid.UUID, tr
 	if len(track.Artists) > 0 {
 		artist = track.Artists[0].Name
 	}
-	art := ""
-	if len(track.Album.Images) > 0 {
-		art = track.Album.Images[0].URL
-	}
 	artistID := ""
 	if len(track.Artists) > 0 {
 		artistID = track.Artists[0].ID
 	}
-	blob, _ := json.Marshal(track)
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO play_history (user_id, track_id, track_name, artist_name, album_name, album_art_url, duration_ms, listened_ms, source, artist_id, track_json)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		userID, track.ID, track.Name, artist, track.Album.Name, art, track.DurationMs, listenedMs, source, artistID, blob)
-	return err
+	art := ""
+	if len(track.Album.Images) > 0 {
+		art = track.Album.Images[0].URL
+	}
+
+	row := dbPlayHistory{
+		UserID:      userID,
+		TrackID:     track.ID,
+		TrackName:   track.Name,
+		ArtistName:  artist,
+		ArtistID:    artistID,
+		AlbumName:   track.Album.Name,
+		AlbumArtURL: art,
+		DurationMs:  track.DurationMs,
+		ListenedMs:  listenedMs,
+		Source:      source,
+		TrackJSON:   &trackJSONField{Track: *track},
+	}
+	return r.db.Create(&row).Error
 }
 
-// GetStats computes real listening stats from recorded plays. No placeholder
-// numbers: a user with no plays gets zeros and empty series.
-func (r *HistoryRepository) GetStats(ctx context.Context, userID uuid.UUID, timeRange string) (*models.StatsReport, error) {
+type statsRow struct {
+	PlayCount     int
+	UniqueTracks  int
+	UniqueArtists int
+	TotalMs       int64
+}
+
+// GetStats computes real listening stats from recorded plays.
+func (r *HistoryRepository) GetStats(_ context.Context, userID uuid.UUID, timeRange string) (*models.StatsReport, error) {
 	report := &models.StatsReport{TopGenres: []models.GenreStat{}, DailyListening: []models.DailyListeningStat{}}
 	if r.db == nil {
 		return report, nil
 	}
 
-	since := time.Time{}
-	switch timeRange {
-	case "4weeks":
-		since = time.Now().AddDate(0, 0, -28)
-	case "6months":
-		since = time.Now().AddDate(0, -6, 0)
-	}
+	since := rangeSince(timeRange)
 
-	var totalMs int64
-	if err := r.db.QueryRow(ctx, `
-		SELECT COUNT(*), COUNT(DISTINCT track_id), COUNT(DISTINCT COALESCE(NULLIF(artist_id, ''), artist_name)), COALESCE(SUM(listened_ms), 0)
-		FROM play_history WHERE user_id = $1 AND played_at >= $2`, userID, since,
-	).Scan(&report.PlayCount, &report.UniqueTracks, &report.UniqueArtists, &totalMs); err != nil {
+	var row struct {
+		PlayCount     int
+		UniqueTracks  int
+		UniqueArtists int
+		TotalMs       int64
+	}
+	err := r.db.Raw(`
+		SELECT
+			COUNT(*) AS play_count,
+			COUNT(DISTINCT track_id) AS unique_tracks,
+			COUNT(DISTINCT COALESCE(NULLIF(artist_id, ''), artist_name)) AS unique_artists,
+			COALESCE(SUM(listened_ms), 0) AS total_ms
+		FROM play_history
+		WHERE user_id = ? AND played_at >= ?`, userID, since).Scan(&row).Error
+	if err != nil {
 		return nil, err
 	}
-	report.TotalMinutes = int(totalMs / 60000)
+	report.PlayCount = row.PlayCount
+	report.UniqueTracks = row.UniqueTracks
+	report.UniqueArtists = row.UniqueArtists
+	report.TotalMinutes = int(row.TotalMs / 60000)
 
 	// Activity series: per day for 4 weeks, per month otherwise.
 	trunc, label := "month", "Mon YY"
 	if timeRange == "4weeks" {
 		trunc, label = "day", "DD Mon"
 	}
-	rows, err := r.db.Query(ctx, `
+	var daily []struct {
+		Label string
+		Hours float64
+	}
+	err = r.db.Raw(`
 		SELECT to_char(date_trunc('`+trunc+`', played_at), '`+label+`') AS label,
 		       COALESCE(SUM(listened_ms), 0) / 3600000.0 AS hours
-		FROM play_history WHERE user_id = $1 AND played_at >= $2
+		FROM play_history
+		WHERE user_id = ? AND played_at >= ?
 		GROUP BY date_trunc('`+trunc+`', played_at)
-		ORDER BY date_trunc('`+trunc+`', played_at)`, userID, since)
+		ORDER BY date_trunc('`+trunc+`', played_at)`, userID, since).Scan(&daily).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var d models.DailyListeningStat
-		if err := rows.Scan(&d.Date, &d.Hours); err != nil {
-			return nil, err
-		}
-		report.DailyListening = append(report.DailyListening, d)
+	for _, d := range daily {
+		report.DailyListening = append(report.DailyListening, models.DailyListeningStat{
+			Date:  d.Label,
+			Hours: d.Hours,
+		})
 	}
 
-	// Streak: consecutive days with at least one play, ending today or yesterday.
-	dayRows, err := r.db.Query(ctx, `
-		SELECT DISTINCT (played_at AT TIME ZONE 'UTC')::date FROM play_history
-		WHERE user_id = $1 ORDER BY 1 DESC`, userID)
+	// Streak: consecutive days with at least one play.
+	var days []time.Time
+	err = r.db.Raw(`
+		SELECT DISTINCT (played_at AT TIME ZONE 'UTC')::date
+		FROM play_history
+		WHERE user_id = ?
+		ORDER BY 1 DESC`, userID).Scan(&days).Error
 	if err != nil {
 		return nil, err
-	}
-	defer dayRows.Close()
-	var days []time.Time
-	for dayRows.Next() {
-		var d time.Time
-		if err := dayRows.Scan(&d); err != nil {
-			return nil, err
-		}
-		days = append(days, d)
 	}
 	report.StreakDays = streakFrom(days, time.Now().UTC())
 	return report, nil
@@ -166,91 +220,99 @@ func rangeSince(timeRange string) time.Time {
 }
 
 // Recent returns the user's most recently played distinct tracks, newest first.
-func (r *HistoryRepository) Recent(ctx context.Context, userID uuid.UUID, limit int) ([]models.PlayHistoryItem, error) {
+func (r *HistoryRepository) Recent(_ context.Context, userID uuid.UUID, limit int) ([]models.PlayHistoryItem, error) {
 	if r.db == nil {
 		return []models.PlayHistoryItem{}, nil
 	}
-	rows, err := r.db.Query(ctx, `
+
+	var rows []struct {
+		TrackJSON *trackJSONField `gorm:"column:track_json"`
+		PlayedAt  time.Time       `gorm:"column:played_at"`
+	}
+	err := r.db.Raw(`
 		SELECT track_json, played_at FROM play_history
-		WHERE user_id = $1 AND track_json IS NOT NULL ORDER BY played_at DESC LIMIT 200`, userID)
+		WHERE user_id = ? AND track_json IS NOT NULL
+		ORDER BY played_at DESC LIMIT 200`, userID).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+
 	out := []models.PlayHistoryItem{}
 	seen := map[string]bool{}
-	for rows.Next() {
-		var t models.Track
-		var at time.Time
-		if err := rows.Scan(&t, &at); err != nil {
-			return nil, err
-		}
-		if t.ID == "" || seen[t.ID] {
+	for _, row := range rows {
+		if row.TrackJSON == nil || row.TrackJSON.ID == "" || seen[row.TrackJSON.ID] {
 			continue
 		}
-		seen[t.ID] = true
-		out = append(out, models.PlayHistoryItem{Track: t, PlayedAt: at})
+		seen[row.TrackJSON.ID] = true
+		out = append(out, models.PlayHistoryItem{Track: row.TrackJSON.Track, PlayedAt: row.PlayedAt})
 		if len(out) >= limit {
 			break
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // TopTracks ranks tracks by play count within the range.
-func (r *HistoryRepository) TopTracks(ctx context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.Track, error) {
+func (r *HistoryRepository) TopTracks(_ context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.Track, error) {
 	if r.db == nil {
 		return []models.Track{}, nil
 	}
-	rows, err := r.db.Query(ctx, `
-		SELECT (array_agg(track_json ORDER BY played_at DESC))[1]
+
+	var rows []struct {
+		TrackJSON *trackJSONField `gorm:"column:track_json"`
+	}
+	err := r.db.Raw(`
+		SELECT (array_agg(track_json ORDER BY played_at DESC))[1] AS track_json
 		FROM play_history
-		WHERE user_id = $1 AND played_at >= $2 AND track_json IS NOT NULL
-		GROUP BY track_id ORDER BY COUNT(*) DESC, MAX(played_at) DESC LIMIT $3`, userID, rangeSince(timeRange), limit)
+		WHERE user_id = ? AND played_at >= ? AND track_json IS NOT NULL
+		GROUP BY track_id
+		ORDER BY COUNT(*) DESC, MAX(played_at) DESC
+		LIMIT ?`, userID, rangeSince(timeRange), limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+
 	out := []models.Track{}
-	for rows.Next() {
-		var t models.Track
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
+	for _, row := range rows {
+		if row.TrackJSON != nil {
+			out = append(out, row.TrackJSON.Track)
 		}
-		out = append(out, t)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// TopArtists ranks artists (by Spotify id) by play count within the range.
-func (r *HistoryRepository) TopArtists(ctx context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.ArtistSummary, error) {
+// TopArtists ranks artists by play count within the range.
+func (r *HistoryRepository) TopArtists(_ context.Context, userID uuid.UUID, timeRange string, limit int) ([]models.ArtistSummary, error) {
 	if r.db == nil {
 		return []models.ArtistSummary{}, nil
 	}
-	rows, err := r.db.Query(ctx, `
-		SELECT artist_id, MAX(artist_name) FROM play_history
-		WHERE user_id = $1 AND played_at >= $2 AND artist_id <> ''
-		GROUP BY artist_id ORDER BY COUNT(*) DESC LIMIT $3`, userID, rangeSince(timeRange), limit)
+
+	var rows []struct {
+		ArtistID   string `gorm:"column:artist_id"`
+		ArtistName string `gorm:"column:artist_name"`
+	}
+	err := r.db.Raw(`
+		SELECT artist_id, MAX(artist_name) AS artist_name
+		FROM play_history
+		WHERE user_id = ? AND played_at >= ? AND artist_id <> ''
+		GROUP BY artist_id
+		ORDER BY COUNT(*) DESC
+		LIMIT ?`, userID, rangeSince(timeRange), limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+
 	out := []models.ArtistSummary{}
-	for rows.Next() {
-		var a models.ArtistSummary
-		if err := rows.Scan(&a.ID, &a.Name); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
+	for _, row := range rows {
+		out = append(out, models.ArtistSummary{ID: row.ArtistID, Name: row.ArtistName})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Clear deletes a user's listening history.
-func (r *HistoryRepository) Clear(ctx context.Context, userID uuid.UUID) error {
+func (r *HistoryRepository) Clear(_ context.Context, userID uuid.UUID) error {
 	if r.db == nil {
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `DELETE FROM play_history WHERE user_id = $1`, userID)
-	return err
+	return r.db.Where("user_id = ?", userID).Delete(&dbPlayHistory{}).Error
 }

@@ -2,298 +2,340 @@ package repository
 
 import (
 	"context"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sonara/api/internal/models"
+	"gorm.io/gorm"
 )
 
 var ErrPlaylistNotFound = errors.New("playlist not found")
 
-// PlaylistRepository stores Sonara's own user-created playlists.
-type PlaylistRepository struct{ db *pgxpool.Pool }
+// dbPlaylist is the GORM-mapped struct for sonara_playlists.
+type dbPlaylist struct {
+	ID          uuid.UUID `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID      uuid.UUID `gorm:"column:user_id;type:uuid;not null;index:idx_sonara_playlists_user,sort:desc,priority:1"`
+	Name        string    `gorm:"column:name;size:120;not null"`
+	Description string    `gorm:"column:description;not null;default:''"`
+	CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt   time.Time `gorm:"column:updated_at;autoUpdateTime;index:idx_sonara_playlists_user,sort:desc,priority:2"`
+}
 
-func NewPlaylistRepository(db *pgxpool.Pool) *PlaylistRepository { return &PlaylistRepository{db: db} }
+func (dbPlaylist) TableName() string { return "sonara_playlists" }
 
-func (r *PlaylistRepository) EnsureSchema(ctx context.Context) error {
+// dbPlaylistTrack is the GORM-mapped struct for sonara_playlist_tracks.
+type dbPlaylistTrack struct {
+	ID         int64              `gorm:"column:id;primaryKey;autoIncrement"`
+	PlaylistID uuid.UUID          `gorm:"column:playlist_id;type:uuid;not null;index:idx_sonara_playlist_tracks,priority:1"`
+	Position   int                `gorm:"column:position;not null;index:idx_sonara_playlist_tracks,priority:2"`
+	TrackID    string             `gorm:"column:track_id;size:128;not null"`
+	TrackJSON  *playlistTrackJSON `gorm:"column:track_json;type:jsonb;not null"`
+	AddedAt    time.Time          `gorm:"column:added_at;autoCreateTime"`
+}
+
+func (dbPlaylistTrack) TableName() string { return "sonara_playlist_tracks" }
+
+// playlistTrackJSON wraps models.Track for JSONB storage in playlist tracks.
+type playlistTrackJSON struct {
+	models.Track
+}
+
+func (t *playlistTrackJSON) Scan(val interface{}) error {
+	if val == nil {
+		return nil
+	}
+	var b []byte
+	switch v := val.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("playlistTrackJSON: unsupported type %T", val)
+	}
+	return json.Unmarshal(b, &t.Track)
+}
+
+func (t playlistTrackJSON) Value() (driver.Value, error) {
+	b, err := json.Marshal(t.Track)
+	return string(b), err
+}
+
+// PlaylistRepository stores Sonara's own user-created playlists using GORM.
+type PlaylistRepository struct{ db *gorm.DB }
+
+func NewPlaylistRepository(db *gorm.DB) *PlaylistRepository { return &PlaylistRepository{db: db} }
+
+func (r *PlaylistRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS sonara_playlists (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			name VARCHAR(120) NOT NULL,
-			description TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX IF NOT EXISTS idx_sonara_playlists_user ON sonara_playlists(user_id, updated_at DESC);
-		CREATE TABLE IF NOT EXISTS sonara_playlist_tracks (
-			id BIGSERIAL PRIMARY KEY,
-			playlist_id UUID NOT NULL REFERENCES sonara_playlists(id) ON DELETE CASCADE,
-			position INT NOT NULL,
-			track_id VARCHAR(128) NOT NULL,
-			track_json JSONB NOT NULL,
-			added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX IF NOT EXISTS idx_sonara_playlist_tracks ON sonara_playlist_tracks(playlist_id, position);`)
-	return err
+	return r.db.AutoMigrate(&dbPlaylist{}, &dbPlaylistTrack{})
 }
 
-func (r *PlaylistRepository) Create(ctx context.Context, userID uuid.UUID, name, desc string) (*models.UserPlaylist, error) {
+func (r *PlaylistRepository) Create(_ context.Context, userID uuid.UUID, name, desc string) (*models.UserPlaylist, error) {
 	if r.db == nil {
 		return nil, ErrNoDatabase
 	}
-	p := &models.UserPlaylist{Tracks: []models.Track{}, Covers: []string{}}
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO sonara_playlists (user_id, name, description) VALUES ($1, $2, $3)
-		RETURNING id, name, description, created_at, updated_at`, userID, name, desc).
-		Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt)
-	return p, err
+	row := dbPlaylist{UserID: userID, Name: name, Description: desc}
+	if err := r.db.Create(&row).Error; err != nil {
+		return nil, err
+	}
+	return &models.UserPlaylist{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		Tracks:      []models.Track{},
+		Covers:      []string{},
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+	}, nil
 }
 
 // List returns the user's playlists with track counts and up to 4 cover images.
-func (r *PlaylistRepository) List(ctx context.Context, userID uuid.UUID) ([]models.UserPlaylist, error) {
+func (r *PlaylistRepository) List(_ context.Context, userID uuid.UUID) ([]models.UserPlaylist, error) {
 	if r.db == nil {
 		return []models.UserPlaylist{}, nil
 	}
-	rows, err := r.db.Query(ctx, `
-		SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
-		       (SELECT COUNT(*) FROM sonara_playlist_tracks t WHERE t.playlist_id = p.id)
-		FROM sonara_playlists p WHERE p.user_id = $1 ORDER BY p.updated_at DESC`, userID)
-	if err != nil {
+
+	var rows []dbPlaylist
+	if err := r.db.Where("user_id = ?", userID).Order("updated_at DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []models.UserPlaylist{}
-	for rows.Next() {
-		var p models.UserPlaylist
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt, &p.TrackCount); err != nil {
-			return nil, err
+
+	out := make([]models.UserPlaylist, 0, len(rows))
+	for _, row := range rows {
+		var trackCount int64
+		r.db.Model(&dbPlaylistTrack{}).Where("playlist_id = ?", row.ID).Count(&trackCount)
+		pl := models.UserPlaylist{
+			ID:          row.ID,
+			Name:        row.Name,
+			Description: row.Description,
+			TrackCount:  int(trackCount),
+			Covers:      r.covers(row.ID),
+			CreatedAt:   row.CreatedAt,
+			UpdatedAt:   row.UpdatedAt,
 		}
-		out = append(out, p)
-	}
-	rows.Close()
-	for i := range out {
-		out[i].Covers = r.covers(ctx, out[i].ID)
+		out = append(out, pl)
 	}
 	return out, nil
 }
 
-func (r *PlaylistRepository) covers(ctx context.Context, id uuid.UUID) []string {
-	rows, err := r.db.Query(ctx, `
-		SELECT track_json #>> '{album,images,0,url}' FROM sonara_playlist_tracks
-		WHERE playlist_id = $1 ORDER BY position LIMIT 12`, id)
-	if err != nil {
-		return []string{}
-	}
-	defer rows.Close()
+func (r *PlaylistRepository) covers(id uuid.UUID) []string {
+	var urls []string
+	r.db.Raw(`
+		SELECT track_json #>> '{album,images,0,url}' AS url
+		FROM sonara_playlist_tracks
+		WHERE playlist_id = ?
+		ORDER BY position
+		LIMIT 12`, id).Scan(&urls)
+
 	seen := map[string]bool{}
 	covers := []string{}
-	for rows.Next() {
-		var u *string
-		if rows.Scan(&u) == nil && u != nil && *u != "" && !seen[*u] && len(covers) < 4 {
-			seen[*u] = true
-			covers = append(covers, *u)
+	for _, u := range urls {
+		if u != "" && !seen[u] && len(covers) < 4 {
+			seen[u] = true
+			covers = append(covers, u)
 		}
 	}
 	return covers
 }
 
 // Get returns a playlist with its tracks; it is only visible to its owner.
-func (r *PlaylistRepository) Get(ctx context.Context, userID, id uuid.UUID) (*models.UserPlaylist, error) {
+func (r *PlaylistRepository) Get(_ context.Context, userID, id uuid.UUID) (*models.UserPlaylist, error) {
 	if r.db == nil {
 		return nil, ErrNoDatabase
 	}
-	p := &models.UserPlaylist{Tracks: []models.Track{}}
-	err := r.db.QueryRow(ctx, `
-		SELECT id, name, description, created_at, updated_at FROM sonara_playlists WHERE id = $1 AND user_id = $2`, id, userID).
-		Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrPlaylistNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	rows, err := r.db.Query(ctx, `SELECT track_json FROM sonara_playlist_tracks WHERE playlist_id = $1 ORDER BY position`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var t models.Track
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
+
+	var row dbPlaylist
+	if err := r.db.Where("id = ? AND user_id = ?", id, userID).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrPlaylistNotFound
 		}
-		p.Tracks = append(p.Tracks, t)
+		return nil, err
 	}
-	p.TrackCount = len(p.Tracks)
-	rows.Close()
-	p.Covers = r.covers(ctx, id)
-	return p, nil
+
+	var trackRows []dbPlaylistTrack
+	if err := r.db.Where("playlist_id = ?", id).Order("position").Find(&trackRows).Error; err != nil {
+		return nil, err
+	}
+
+	tracks := make([]models.Track, 0, len(trackRows))
+	for _, tr := range trackRows {
+		if tr.TrackJSON != nil {
+			tracks = append(tracks, tr.TrackJSON.Track)
+		}
+	}
+
+	return &models.UserPlaylist{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		TrackCount:  len(tracks),
+		Covers:      r.covers(id),
+		Tracks:      tracks,
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+	}, nil
 }
 
-func (r *PlaylistRepository) owns(ctx context.Context, userID, id uuid.UUID) error {
-	var ok bool
-	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sonara_playlists WHERE id = $1 AND user_id = $2)`, id, userID).Scan(&ok); err != nil {
+func (r *PlaylistRepository) owns(userID, id uuid.UUID) error {
+	var count int64
+	if err := r.db.Model(&dbPlaylist{}).Where("id = ? AND user_id = ?", id, userID).Count(&count).Error; err != nil {
 		return err
 	}
-	if !ok {
+	if count == 0 {
 		return ErrPlaylistNotFound
 	}
 	return nil
 }
 
-func (r *PlaylistRepository) Update(ctx context.Context, userID, id uuid.UUID, name, desc string) error {
+func (r *PlaylistRepository) Update(_ context.Context, userID, id uuid.UUID, name, desc string) error {
 	if r.db == nil {
 		return ErrNoDatabase
 	}
-	tag, err := r.db.Exec(ctx, `UPDATE sonara_playlists SET name = $3, description = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2`,
-		id, userID, name, desc)
-	if err == nil && tag.RowsAffected() == 0 {
+	result := r.db.Model(&dbPlaylist{}).
+		Where("id = ? AND user_id = ?", id, userID).
+		Updates(map[string]interface{}{"name": name, "description": desc, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
 		return ErrPlaylistNotFound
 	}
-	return err
+	return nil
 }
 
-func (r *PlaylistRepository) Delete(ctx context.Context, userID, id uuid.UUID) error {
+func (r *PlaylistRepository) Delete(_ context.Context, userID, id uuid.UUID) error {
 	if r.db == nil {
 		return ErrNoDatabase
 	}
-	tag, err := r.db.Exec(ctx, `DELETE FROM sonara_playlists WHERE id = $1 AND user_id = $2`, id, userID)
-	if err == nil && tag.RowsAffected() == 0 {
+	result := r.db.Where("id = ? AND user_id = ?", id, userID).Delete(&dbPlaylist{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
 		return ErrPlaylistNotFound
 	}
-	return err
+	return nil
 }
 
-// AddTracks appends tracks, skipping ones already in the playlist. It returns how many were added.
-func (r *PlaylistRepository) AddTracks(ctx context.Context, userID, id uuid.UUID, tracks []models.Track) (int, error) {
+// AddTracks appends tracks, skipping ones already in the playlist. Returns how many were added.
+func (r *PlaylistRepository) AddTracks(_ context.Context, userID, id uuid.UUID, tracks []models.Track) (int, error) {
 	if r.db == nil {
 		return 0, ErrNoDatabase
 	}
-	if err := r.owns(ctx, userID, id); err != nil {
+	if err := r.owns(userID, id); err != nil {
 		return 0, err
 	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return 0, err
+
+	tx := r.db.Begin()
+	if tx.Error != nil {
+		return 0, tx.Error
 	}
-	defer tx.Rollback(ctx)
 
 	var next int
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(position) + 1, 0) FROM sonara_playlist_tracks WHERE playlist_id = $1`, id).Scan(&next); err != nil {
-		return 0, err
-	}
+	tx.Raw("SELECT COALESCE(MAX(position) + 1, 0) FROM sonara_playlist_tracks WHERE playlist_id = ?", id).Scan(&next)
+
 	added := 0
 	for _, t := range tracks {
 		if t.ID == "" {
 			continue
 		}
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sonara_playlist_tracks WHERE playlist_id = $1 AND track_id = $2)`, id, t.ID).Scan(&exists); err != nil {
-			return 0, err
-		}
-		if exists {
+		var count int64
+		tx.Model(&dbPlaylistTrack{}).Where("playlist_id = ? AND track_id = ?", id, t.ID).Count(&count)
+		if count > 0 {
 			continue
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO sonara_playlist_tracks (playlist_id, position, track_id, track_json) VALUES ($1, $2, $3, $4)`,
-			id, next, t.ID, t); err != nil {
+		row := dbPlaylistTrack{
+			PlaylistID: id,
+			Position:   next,
+			TrackID:    t.ID,
+			TrackJSON:  &playlistTrackJSON{Track: t},
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			tx.Rollback()
 			return 0, err
 		}
 		next++
 		added++
 	}
-	if _, err := tx.Exec(ctx, `UPDATE sonara_playlists SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id); err != nil {
+	tx.Model(&dbPlaylist{}).Where("id = ?", id).Update("updated_at", time.Now())
+
+	if err := tx.Commit().Error; err != nil {
 		return 0, err
 	}
-	return added, tx.Commit(ctx)
+	return added, nil
 }
 
-// renumber rewrites positions 0..n-1 in the given order (used after remove/reorder).
-func (r *PlaylistRepository) renumber(ctx context.Context, tx pgx.Tx, ids []int64) error {
+// renumber rewrites positions 0..n-1 in the given order.
+func (r *PlaylistRepository) renumber(tx *gorm.DB, ids []int64) error {
 	for i, rowID := range ids {
-		if _, err := tx.Exec(ctx, `UPDATE sonara_playlist_tracks SET position = $2 WHERE id = $1`, rowID, i); err != nil {
+		if err := tx.Model(&dbPlaylistTrack{}).Where("id = ?", rowID).Update("position", i).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *PlaylistRepository) orderedRowIDs(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]int64, error) {
-	rows, err := tx.Query(ctx, `SELECT id FROM sonara_playlist_tracks WHERE playlist_id = $1 ORDER BY position`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+func (r *PlaylistRepository) orderedRowIDs(tx *gorm.DB, id uuid.UUID) ([]int64, error) {
 	var ids []int64
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		ids = append(ids, v)
-	}
-	return ids, rows.Err()
+	err := tx.Model(&dbPlaylistTrack{}).Select("id").Where("playlist_id = ?", id).Order("position").Pluck("id", &ids).Error
+	return ids, err
 }
 
-// RemoveTrack removes a track by its track id.
-func (r *PlaylistRepository) RemoveTrack(ctx context.Context, userID, id uuid.UUID, trackID string) error {
+// RemoveTrack removes a track by its track id and renumbers the remaining ones.
+func (r *PlaylistRepository) RemoveTrack(_ context.Context, userID, id uuid.UUID, trackID string) error {
 	if r.db == nil {
 		return ErrNoDatabase
 	}
-	if err := r.owns(ctx, userID, id); err != nil {
+	if err := r.owns(userID, id); err != nil {
 		return err
 	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM sonara_playlist_tracks WHERE playlist_id = $1 AND track_id = $2`, id, trackID); err != nil {
-		return err
-	}
-	ids, err := r.orderedRowIDs(ctx, tx, id)
-	if err != nil {
-		return err
-	}
-	if err := r.renumber(ctx, tx, ids); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE sonara_playlists SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("playlist_id = ? AND track_id = ?", id, trackID).Delete(&dbPlaylistTrack{}).Error; err != nil {
+			return err
+		}
+		ids, err := r.orderedRowIDs(tx, id)
+		if err != nil {
+			return err
+		}
+		if err := r.renumber(tx, ids); err != nil {
+			return err
+		}
+		return tx.Model(&dbPlaylist{}).Where("id = ?", id).Update("updated_at", time.Now()).Error
+	})
 }
 
 // MoveTrack moves the track at index `from` to index `to`.
-func (r *PlaylistRepository) MoveTrack(ctx context.Context, userID, id uuid.UUID, from, to int) error {
+func (r *PlaylistRepository) MoveTrack(_ context.Context, userID, id uuid.UUID, from, to int) error {
 	if r.db == nil {
 		return ErrNoDatabase
 	}
-	if err := r.owns(ctx, userID, id); err != nil {
+	if err := r.owns(userID, id); err != nil {
 		return err
 	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	ids, err := r.orderedRowIDs(ctx, tx, id)
-	if err != nil {
-		return err
-	}
-	if from < 0 || from >= len(ids) || to < 0 || to >= len(ids) {
-		return errors.New("position out of range")
-	}
-	moved := ids[from]
-	ids = append(ids[:from], ids[from+1:]...)
-	ids = append(ids[:to], append([]int64{moved}, ids[to:]...)...)
-	if err := r.renumber(ctx, tx, ids); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		ids, err := r.orderedRowIDs(tx, id)
+		if err != nil {
+			return err
+		}
+		if from < 0 || from >= len(ids) || to < 0 || to >= len(ids) {
+			return errors.New("position out of range")
+		}
+		moved := ids[from]
+		ids = append(ids[:from], ids[from+1:]...)
+		newIDs := make([]int64, 0, len(ids)+1)
+		newIDs = append(newIDs, ids[:to]...)
+		newIDs = append(newIDs, moved)
+		newIDs = append(newIDs, ids[to:]...)
+		return r.renumber(tx, newIDs)
+	})
 }
+

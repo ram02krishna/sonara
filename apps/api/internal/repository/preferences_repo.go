@@ -2,53 +2,129 @@ package repository
 
 import (
 	"context"
-	"errors"
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sonara/api/internal/models"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// PreferencesRepository stores each user's taste choices (languages, genres,
-// artists, country). It falls back to memory when Postgres isn't available.
+// dbUserPreference is the GORM-mapped struct for user_preferences.
+type dbUserPreference struct {
+	UserID         uuid.UUID          `gorm:"column:user_id;type:uuid;primaryKey"`
+	Languages      pqStringArray      `gorm:"column:languages;type:text[];not null;default:'{}'"`
+	Genres         pqStringArray      `gorm:"column:genres;type:text[];not null;default:'{}'"`
+	Artists        artistSummaryJSON  `gorm:"column:artists;type:jsonb;not null;default:'[]'"`
+	Country        string             `gorm:"column:country;size:8;not null;default:''"`
+	Onboarded      bool               `gorm:"column:onboarded;not null;default:false"`
+	AudioQuality   string             `gorm:"column:audio_quality;size:32;not null;default:'lossless'"`
+	NormalizeAudio bool               `gorm:"column:normalize_audio;not null;default:true"`
+	UpdatedAt      time.Time          `gorm:"column:updated_at;autoUpdateTime"`
+}
+
+func (dbUserPreference) TableName() string { return "user_preferences" }
+
+// pqStringArray handles PostgreSQL TEXT[] columns.
+type pqStringArray []string
+
+func (a *pqStringArray) Scan(val interface{}) error {
+	if val == nil {
+		*a = []string{}
+		return nil
+	}
+	var b []byte
+	switch v := val.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("pqStringArray: unsupported type %T", val)
+	}
+	// PostgreSQL arrays come in as {"a","b","c"} notation.
+	// Use pgx-style parsing via json alternative for simplicity:
+	// Convert {a,b,c} → ["a","b","c"] and unmarshal.
+	s := string(b)
+	if len(s) >= 2 && s[0] == '{' && s[len(s)-1] == '}' {
+		inner := s[1 : len(s)-1]
+		if inner == "" {
+			*a = []string{}
+			return nil
+		}
+		// Re-encode as JSON array for safe unmarshal.
+		jsonStr := "[" + inner + "]"
+		return json.Unmarshal([]byte(jsonStr), a)
+	}
+	return json.Unmarshal(b, a)
+}
+
+func (a pqStringArray) Value() (driver.Value, error) {
+	if len(a) == 0 {
+		return "{}", nil
+	}
+	// Build PostgreSQL array literal: '{"a","b"}'
+	b, err := json.Marshal([]string(a))
+	if err != nil {
+		return nil, err
+	}
+	// Convert ["a","b"] → {"a","b"}
+	s := string(b)
+	return "{" + s[1:len(s)-1] + "}", nil
+}
+
+// artistSummaryJSON handles []models.ArtistSummary stored as JSONB.
+type artistSummaryJSON []models.ArtistSummary
+
+func (a *artistSummaryJSON) Scan(val interface{}) error {
+	if val == nil {
+		*a = []models.ArtistSummary{}
+		return nil
+	}
+	var b []byte
+	switch v := val.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("artistSummaryJSON: unsupported type %T", val)
+	}
+	return json.Unmarshal(b, a)
+}
+
+func (a artistSummaryJSON) Value() (driver.Value, error) {
+	if a == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal([]models.ArtistSummary(a))
+	return string(b), err
+}
+
+// PreferencesRepository stores each user's taste choices using GORM.
 type PreferencesRepository struct {
-	db  *pgxpool.Pool
+	db  *gorm.DB
 	mu  sync.RWMutex
 	mem map[uuid.UUID]models.Preferences
 }
 
-func NewPreferencesRepository(db *pgxpool.Pool) *PreferencesRepository {
+func NewPreferencesRepository(db *gorm.DB) *PreferencesRepository {
 	return &PreferencesRepository{db: db, mem: make(map[uuid.UUID]models.Preferences)}
 }
 
-// EnsureSchema creates the table for databases initialised before this feature existed.
-func (r *PreferencesRepository) EnsureSchema(ctx context.Context) error {
+// EnsureSchema auto-migrates the user_preferences table.
+func (r *PreferencesRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS user_preferences (
-			user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-			languages TEXT[] NOT NULL DEFAULT '{}',
-			genres TEXT[] NOT NULL DEFAULT '{}',
-			artists JSONB NOT NULL DEFAULT '[]',
-			country VARCHAR(8) NOT NULL DEFAULT '',
-			onboarded BOOLEAN NOT NULL DEFAULT false,
-			audio_quality VARCHAR(32) NOT NULL DEFAULT 'lossless',
-			normalize_audio BOOLEAN NOT NULL DEFAULT true,
-			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-		)`)
-	if err != nil {
-		return err
-	}
-	_, _ = r.db.Exec(ctx, `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS audio_quality VARCHAR(32) NOT NULL DEFAULT 'lossless'`)
-	_, _ = r.db.Exec(ctx, `ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS normalize_audio BOOLEAN NOT NULL DEFAULT true`)
-	return nil
+	return r.db.AutoMigrate(&dbUserPreference{})
 }
 
-func empty() models.Preferences {
+func emptyPrefs() models.Preferences {
 	return models.Preferences{
 		Languages:      []string{},
 		Genres:         []string{},
@@ -58,50 +134,32 @@ func empty() models.Preferences {
 	}
 }
 
-func (r *PreferencesRepository) Get(ctx context.Context, userID uuid.UUID) (models.Preferences, error) {
+func (r *PreferencesRepository) Get(_ context.Context, userID uuid.UUID) (models.Preferences, error) {
 	if r.db == nil {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		if p, ok := r.mem[userID]; ok {
 			return p, nil
 		}
-		return empty(), nil
+		return emptyPrefs(), nil
 	}
-	p := empty()
-	var aq *string
-	var na *bool
-	err := r.db.QueryRow(ctx,
-		`SELECT languages, genres, artists, country, onboarded, audio_quality, normalize_audio FROM user_preferences WHERE user_id = $1`, userID,
-	).Scan(&p.Languages, &p.Genres, &p.Artists, &p.Country, &p.Onboarded, &aq, &na)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return empty(), nil
-	}
-	if err != nil {
-		return empty(), err
-	}
-	if p.Languages == nil {
-		p.Languages = []string{}
-	}
-	if p.Genres == nil {
-		p.Genres = []string{}
-	}
-	if p.Artists == nil {
-		p.Artists = []models.ArtistSummary{}
-	}
-	if aq != nil && *aq != "" {
-		p.AudioQuality = *aq
-	} else {
-		p.AudioQuality = "lossless"
-	}
-	if na != nil {
-		p.NormalizeAudio = *na
-	} else {
-		p.NormalizeAudio = true
-	}
-	return p, nil
-}
 
-func (r *PreferencesRepository) Save(ctx context.Context, userID uuid.UUID, p models.Preferences) error {
+	var row dbUserPreference
+	result := r.db.First(&row, "user_id = ?", userID)
+	if result.Error != nil {
+		// No record is fine — return defaults.
+		return emptyPrefs(), nil
+	}
+
+	p := models.Preferences{
+		Languages:      []string(row.Languages),
+		Genres:         []string(row.Genres),
+		Artists:        []models.ArtistSummary(row.Artists),
+		Country:        row.Country,
+		Onboarded:      row.Onboarded,
+		AudioQuality:   row.AudioQuality,
+		NormalizeAudio: row.NormalizeAudio,
+	}
 	if p.Languages == nil {
 		p.Languages = []string{}
 	}
@@ -114,20 +172,45 @@ func (r *PreferencesRepository) Save(ctx context.Context, userID uuid.UUID, p mo
 	if p.AudioQuality == "" {
 		p.AudioQuality = "lossless"
 	}
+	return p, nil
+}
+
+func (r *PreferencesRepository) Save(_ context.Context, userID uuid.UUID, p models.Preferences) error {
+	if p.Languages == nil {
+		p.Languages = []string{}
+	}
+	if p.Genres == nil {
+		p.Genres = []string{}
+	}
+	if p.Artists == nil {
+		p.Artists = []models.ArtistSummary{}
+	}
+	if p.AudioQuality == "" {
+		p.AudioQuality = "lossless"
+	}
+
 	if r.db == nil {
 		r.mu.Lock()
 		r.mem[userID] = p
 		r.mu.Unlock()
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO user_preferences (user_id, languages, genres, artists, country, onboarded, audio_quality, normalize_audio, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
-		ON CONFLICT (user_id) DO UPDATE SET
-			languages = EXCLUDED.languages, genres = EXCLUDED.genres, artists = EXCLUDED.artists,
-			country = EXCLUDED.country, onboarded = EXCLUDED.onboarded,
-			audio_quality = EXCLUDED.audio_quality, normalize_audio = EXCLUDED.normalize_audio,
-			updated_at = CURRENT_TIMESTAMP`,
-		userID, p.Languages, p.Genres, p.Artists, p.Country, p.Onboarded, p.AudioQuality, p.NormalizeAudio)
-	return err
+
+	row := dbUserPreference{
+		UserID:         userID,
+		Languages:      pqStringArray(p.Languages),
+		Genres:         pqStringArray(p.Genres),
+		Artists:        artistSummaryJSON(p.Artists),
+		Country:        p.Country,
+		Onboarded:      p.Onboarded,
+		AudioQuality:   p.AudioQuality,
+		NormalizeAudio: p.NormalizeAudio,
+	}
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"languages", "genres", "artists", "country",
+			"onboarded", "audio_quality", "normalize_audio", "updated_at",
+		}),
+	}).Create(&row).Error
 }

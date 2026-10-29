@@ -2,53 +2,79 @@ package repository
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sonara/api/internal/models"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
+// dbUserLibrary is the GORM-mapped struct for the user_library table.
+type dbUserLibrary struct {
+	UserID      uuid.UUID         `gorm:"column:user_id;type:uuid;not null;primaryKey;index:idx_user_library_added,priority:1"`
+	TrackURI    string            `gorm:"column:track_uri;size:255;not null;primaryKey"`
+	TrackID     string            `gorm:"column:track_id;size:128;not null;default:''"`
+	TrackName   string            `gorm:"column:track_name;size:255;not null;default:''"`
+	ArtistName  string            `gorm:"column:artist_name;size:255;not null;default:''"`
+	AlbumName   string            `gorm:"column:album_name;size:255;not null;default:''"`
+	AlbumArtURL string            `gorm:"column:album_art_url;default:''"`
+	PreviewURL  string            `gorm:"column:preview_url;default:''"`
+	DurationMs  int               `gorm:"column:duration_ms;not null;default:0"`
+	AddedAt     time.Time         `gorm:"column:added_at;autoCreateTime;index:idx_user_library_added,priority:2,sort:desc"`
+	TrackJSON   *libraryTrackJSON `gorm:"column:track_json;type:jsonb"`
+}
+
+func (dbUserLibrary) TableName() string { return "user_library" }
+
+// libraryTrackJSON wraps models.Track for JSONB storage.
+type libraryTrackJSON struct {
+	models.Track
+}
+
+func (t *libraryTrackJSON) Scan(val interface{}) error {
+	var b []byte
+	switch v := val.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("libraryTrackJSON: unsupported type %T", val)
+	}
+	return json.Unmarshal(b, &t.Track)
+}
+
+func (t libraryTrackJSON) Value() (driver.Value, error) {
+	b, err := json.Marshal(t.Track)
+	return string(b), err
+}
+
 type LibraryRepository struct {
-	db     *pgxpool.Pool
+	db     *gorm.DB
 	mu     sync.RWMutex
 	memLib map[uuid.UUID]map[string]models.Track
 }
 
-func NewLibraryRepository(db *pgxpool.Pool) *LibraryRepository {
+func NewLibraryRepository(db *gorm.DB) *LibraryRepository {
 	return &LibraryRepository{
 		db:     db,
 		memLib: make(map[uuid.UUID]map[string]models.Track),
 	}
 }
 
-func (r *LibraryRepository) EnsureSchema(ctx context.Context) error {
+func (r *LibraryRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	query := `
-		CREATE TABLE IF NOT EXISTS user_library (
-			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			track_uri VARCHAR(255) NOT NULL,
-			track_id VARCHAR(128) NOT NULL DEFAULT '',
-			track_name VARCHAR(255) NOT NULL DEFAULT '',
-			artist_name VARCHAR(255) NOT NULL DEFAULT '',
-			album_name VARCHAR(255) NOT NULL DEFAULT '',
-			album_art_url TEXT DEFAULT '',
-			preview_url TEXT DEFAULT '',
-			duration_ms INT NOT NULL DEFAULT 0,
-			added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (user_id, track_uri)
-		);
-		CREATE INDEX IF NOT EXISTS idx_user_library_added ON user_library(user_id, added_at DESC);
-		ALTER TABLE user_library ADD COLUMN IF NOT EXISTS track_json JSONB;
-	`
-	_, err := r.db.Exec(ctx, query)
-	return err
+	return r.db.AutoMigrate(&dbUserLibrary{})
 }
 
-func (r *LibraryRepository) SaveTrack(ctx context.Context, userID uuid.UUID, t models.Track) error {
+func (r *LibraryRepository) SaveTrack(_ context.Context, userID uuid.UUID, t models.Track) error {
 	if t.URI == "" {
 		t.URI = "spotify:track:" + t.ID
 	}
@@ -75,17 +101,25 @@ func (r *LibraryRepository) SaveTrack(ctx context.Context, userID uuid.UUID, t m
 		return nil
 	}
 
-	blob, _ := json.Marshal(t)
-	query := `
-		INSERT INTO user_library (user_id, track_uri, track_id, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms, track_json)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (user_id, track_uri) DO UPDATE SET track_json = EXCLUDED.track_json;
-	`
-	_, err := r.db.Exec(ctx, query, userID, t.URI, t.ID, t.Name, artist, t.Album.Name, art, preview, t.DurationMs, blob)
-	return err
+	row := dbUserLibrary{
+		UserID:      userID,
+		TrackURI:    t.URI,
+		TrackID:     t.ID,
+		TrackName:   t.Name,
+		ArtistName:  artist,
+		AlbumName:   t.Album.Name,
+		AlbumArtURL: art,
+		PreviewURL:  preview,
+		DurationMs:  t.DurationMs,
+		TrackJSON:   &libraryTrackJSON{Track: t},
+	}
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "track_uri"}},
+		DoUpdates: clause.AssignmentColumns([]string{"track_json"}),
+	}).Create(&row).Error
 }
 
-func (r *LibraryRepository) RemoveTrack(ctx context.Context, userID uuid.UUID, trackURI string) error {
+func (r *LibraryRepository) RemoveTrack(_ context.Context, userID uuid.UUID, trackURI string) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -94,13 +128,10 @@ func (r *LibraryRepository) RemoveTrack(ctx context.Context, userID uuid.UUID, t
 		}
 		return nil
 	}
-
-	query := `DELETE FROM user_library WHERE user_id = $1 AND track_uri = $2;`
-	_, err := r.db.Exec(ctx, query, userID, trackURI)
-	return err
+	return r.db.Where("user_id = ? AND track_uri = ?", userID, trackURI).Delete(&dbUserLibrary{}).Error
 }
 
-func (r *LibraryRepository) IsTrackSaved(ctx context.Context, userID uuid.UUID, trackURI string) (bool, error) {
+func (r *LibraryRepository) IsTrackSaved(_ context.Context, userID uuid.UUID, trackURI string) (bool, error) {
 	if r.db == nil {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
@@ -111,13 +142,12 @@ func (r *LibraryRepository) IsTrackSaved(ctx context.Context, userID uuid.UUID, 
 		return false, nil
 	}
 
-	query := `SELECT EXISTS(SELECT 1 FROM user_library WHERE user_id = $1 AND track_uri = $2);`
-	var exists bool
-	err := r.db.QueryRow(ctx, query, userID, trackURI).Scan(&exists)
-	return exists, err
+	var count int64
+	err := r.db.Model(&dbUserLibrary{}).Where("user_id = ? AND track_uri = ?", userID, trackURI).Count(&count).Error
+	return count > 0, err
 }
 
-func (r *LibraryRepository) GetSavedTracks(ctx context.Context, userID uuid.UUID, limit int) ([]models.Track, error) {
+func (r *LibraryRepository) GetSavedTracks(_ context.Context, userID uuid.UUID, limit int) ([]models.Track, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
@@ -137,48 +167,40 @@ func (r *LibraryRepository) GetSavedTracks(ctx context.Context, userID uuid.UUID
 		return out, nil
 	}
 
-	query := `
-		SELECT track_id, track_uri, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms, track_json
-		FROM user_library
-		WHERE user_id = $1
-		ORDER BY added_at DESC
-		LIMIT $2;
-	`
-	rows, err := r.db.Query(ctx, query, userID, limit)
+	var rows []dbUserLibrary
+	err := r.db.Select("track_id, track_uri, track_name, artist_name, album_name, album_art_url, preview_url, duration_ms, track_json").
+		Where("user_id = ?", userID).
+		Order("added_at DESC").
+		Limit(limit).
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	out := make([]models.Track, 0)
-	for rows.Next() {
-		var id, uri, name, artist, album, art, preview string
-		var durationMs int
-		var full *models.Track
-		if err := rows.Scan(&id, &uri, &name, &artist, &album, &art, &preview, &durationMs, &full); err != nil {
-			return nil, err
-		}
-		if full != nil && full.ID != "" {
-			full.IsLiked = true
-			out = append(out, *full)
+	out := make([]models.Track, 0, len(rows))
+	for _, row := range rows {
+		if row.TrackJSON != nil && row.TrackJSON.ID != "" {
+			t := row.TrackJSON.Track
+			t.IsLiked = true
+			out = append(out, t)
 			continue
 		}
 		var pURL *string
-		if preview != "" {
-			pURL = &preview
+		if row.PreviewURL != "" {
+			pURL = &row.PreviewURL
 		}
 		images := []models.Image{}
-		if art != "" {
-			images = append(images, models.Image{URL: art})
+		if row.AlbumArtURL != "" {
+			images = append(images, models.Image{URL: row.AlbumArtURL})
 		}
 		out = append(out, models.Track{
-			ID:         id,
-			Name:       name,
-			URI:        uri,
-			DurationMs: durationMs,
+			ID:         row.TrackID,
+			Name:       row.TrackName,
+			URI:        row.TrackURI,
+			DurationMs: row.DurationMs,
 			PreviewURL: pURL,
-			Artists:    []models.ArtistSummary{{Name: artist}},
-			Album:      models.AlbumSummary{Name: album, Images: images},
+			Artists:    []models.ArtistSummary{{Name: row.ArtistName}},
+			Album:      models.AlbumSummary{Name: row.AlbumName, Images: images},
 		})
 	}
 	return out, nil

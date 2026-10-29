@@ -8,94 +8,87 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sonara/api/internal/models"
+	"gorm.io/gorm"
 )
 
+// dbUser is the GORM-mapped struct for the users table.
+type dbUser struct {
+	ID           uuid.UUID `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()"`
+	Email        string    `gorm:"column:email;uniqueIndex:idx_users_email;size:255;not null"`
+	PasswordHash string    `gorm:"column:password_hash;size:255;not null;default:''"`
+	DisplayName  string    `gorm:"column:display_name;size:255;not null"`
+	AvatarURL    string    `gorm:"column:avatar_url;default:''"`
+	Bio          string    `gorm:"column:bio;default:''"`
+	Product      string    `gorm:"column:product;size:64;default:'premium'"`
+	Country      string    `gorm:"column:country;size:8;default:'US'"`
+	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime"`
+}
+
+func (dbUser) TableName() string { return "users" }
+
+// dbSession is the GORM-mapped struct for the sessions table.
+type dbSession struct {
+	ID        string    `gorm:"column:id;size:128;primaryKey"`
+	UserID    uuid.UUID `gorm:"column:user_id;type:uuid;not null;index:idx_sessions_user_id"`
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
+	ExpiresAt time.Time `gorm:"column:expires_at;not null"`
+}
+
+func (dbSession) TableName() string { return "sessions" }
+
+func toModelUser(u dbUser) *models.User {
+	return &models.User{
+		ID:           u.ID,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		DisplayName:  u.DisplayName,
+		AvatarURL:    u.AvatarURL,
+		Bio:          u.Bio,
+		Product:      u.Product,
+		Country:      u.Country,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
+	}
+}
+
 type UserRepository struct {
-	db       *pgxpool.Pool
+	db       *gorm.DB
 	mu       sync.RWMutex
 	memUsers map[uuid.UUID]*models.User
 	memEmail map[string]uuid.UUID
 	memSess  map[string]models.Session
 }
 
-func NewUserRepository(db *pgxpool.Pool) *UserRepository {
-	repo := &UserRepository{
+func NewUserRepository(db *gorm.DB) *UserRepository {
+	return &UserRepository{
 		db:       db,
 		memUsers: make(map[uuid.UUID]*models.User),
 		memEmail: make(map[string]uuid.UUID),
 		memSess:  make(map[string]models.Session),
 	}
-
-	return repo
 }
 
-// EnsureSchema updates the users & sessions tables for native Sonara accounts
-func (r *UserRepository) EnsureSchema(ctx context.Context) error {
+// EnsureSchema auto-migrates the users and sessions tables.
+func (r *UserRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
+	// Enable uuid-ossp and pgcrypto extensions.
+	r.db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`)
+	r.db.Exec(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`)
 
-	queries := []string{
-		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`,
-		`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`,
-		`CREATE TABLE IF NOT EXISTS users (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			email VARCHAR(255) UNIQUE NOT NULL,
-			password_hash VARCHAR(255) NOT NULL DEFAULT '',
-			display_name VARCHAR(255) NOT NULL,
-			avatar_url TEXT DEFAULT '',
-			bio TEXT DEFAULT '',
-			product VARCHAR(64) DEFAULT 'premium',
-			country VARCHAR(8) DEFAULT 'US',
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-		);`,
-		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255) NOT NULL DEFAULT '';`,
-		`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT '';`,
-		`ALTER TABLE users ADD COLUMN IF NOT EXISTS product VARCHAR(64) DEFAULT 'premium';`,
-		`DO $$ 
-		BEGIN 
-			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='spotify_id') THEN 
-				ALTER TABLE users ALTER COLUMN spotify_id DROP NOT NULL; 
-			END IF;
-			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='encrypted_access_token') THEN 
-				ALTER TABLE users ALTER COLUMN encrypted_access_token DROP NOT NULL; 
-			END IF;
-			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='encrypted_refresh_token') THEN 
-				ALTER TABLE users ALTER COLUMN encrypted_refresh_token DROP NOT NULL; 
-			END IF;
-			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='token_expires_at') THEN 
-				ALTER TABLE users ALTER COLUMN token_expires_at DROP NOT NULL; 
-			END IF;
-		END $$;`,
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id VARCHAR(128) PRIMARY KEY,
-			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-			expires_at TIMESTAMP WITH TIME ZONE NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);`,
-	}
-
-	for _, q := range queries {
-		if _, err := r.db.Exec(ctx, q); err != nil {
-			// Continue on non-fatal warnings
-		}
+	if err := r.db.AutoMigrate(&dbUser{}, &dbSession{}); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (r *UserRepository) CreateUser(ctx context.Context, u *models.User) (*models.User, error) {
+func (r *UserRepository) CreateUser(_ context.Context, u *models.User) (*models.User, error) {
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
 	}
-	now := time.Now()
-	u.CreatedAt = now
-	u.UpdatedAt = now
 	cleanEmail := strings.ToLower(strings.TrimSpace(u.Email))
 
 	if r.db == nil {
@@ -105,36 +98,31 @@ func (r *UserRepository) CreateUser(ctx context.Context, u *models.User) (*model
 			return nil, errors.New("email already registered")
 		}
 		u.Email = cleanEmail
+		now := time.Now()
+		u.CreatedAt = now
+		u.UpdatedAt = now
 		r.memUsers[u.ID] = u
 		r.memEmail[cleanEmail] = u.ID
 		return u, nil
 	}
 
-	query := `
-		INSERT INTO users (id, email, password_hash, display_name, avatar_url, bio, product, country, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, created_at, updated_at;
-	`
-	err := r.db.QueryRow(ctx, query,
-		u.ID,
-		cleanEmail,
-		u.PasswordHash,
-		u.DisplayName,
-		u.AvatarURL,
-		u.Bio,
-		u.Product,
-		u.Country,
-		u.CreatedAt,
-		u.UpdatedAt,
-	).Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
-
-	if err != nil {
-		return nil, err
+	row := dbUser{
+		ID:           u.ID,
+		Email:        cleanEmail,
+		PasswordHash: u.PasswordHash,
+		DisplayName:  u.DisplayName,
+		AvatarURL:    u.AvatarURL,
+		Bio:          u.Bio,
+		Product:      u.Product,
+		Country:      u.Country,
 	}
-	return u, nil
+	if result := r.db.Create(&row); result.Error != nil {
+		return nil, result.Error
+	}
+	return toModelUser(row), nil
 }
 
-func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
+func (r *UserRepository) GetByEmail(_ context.Context, email string) (*models.User, error) {
 	cleanEmail := strings.ToLower(strings.TrimSpace(email))
 	if r.db == nil {
 		r.mu.RLock()
@@ -146,34 +134,18 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 		return r.memUsers[id], nil
 	}
 
-	query := `
-		SELECT id, email, password_hash, display_name, avatar_url, bio, product, country, created_at, updated_at
-		FROM users
-		WHERE LOWER(email) = $1;
-	`
-	var u models.User
-	err := r.db.QueryRow(ctx, query, cleanEmail).Scan(
-		&u.ID,
-		&u.Email,
-		&u.PasswordHash,
-		&u.DisplayName,
-		&u.AvatarURL,
-		&u.Bio,
-		&u.Product,
-		&u.Country,
-		&u.CreatedAt,
-		&u.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	var row dbUser
+	result := r.db.Where("LOWER(email) = ?", cleanEmail).First(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, nil
 	}
-	return &u, nil
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return toModelUser(row), nil
 }
 
-func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+func (r *UserRepository) GetByID(_ context.Context, id uuid.UUID) (*models.User, error) {
 	if r.db == nil {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
@@ -184,64 +156,40 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 		return u, nil
 	}
 
-	query := `
-		SELECT id, email, password_hash, display_name, avatar_url, bio, product, country, created_at, updated_at
-		FROM users
-		WHERE id = $1;
-	`
-	var u models.User
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&u.ID,
-		&u.Email,
-		&u.PasswordHash,
-		&u.DisplayName,
-		&u.AvatarURL,
-		&u.Bio,
-		&u.Product,
-		&u.Country,
-		&u.CreatedAt,
-		&u.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	var row dbUser
+	result := r.db.First(&row, "id = ?", id)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, nil
 	}
-	return &u, nil
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return toModelUser(row), nil
 }
 
-func (r *UserRepository) UpdateUser(ctx context.Context, u *models.User) (*models.User, error) {
-	u.UpdatedAt = time.Now()
+func (r *UserRepository) UpdateUser(_ context.Context, u *models.User) (*models.User, error) {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		u.UpdatedAt = time.Now()
 		r.memUsers[u.ID] = u
 		return u, nil
 	}
 
-	query := `
-		UPDATE users
-		SET display_name = $1, avatar_url = $2, bio = $3, country = $4, updated_at = $5
-		WHERE id = $6
-		RETURNING updated_at;
-	`
-	err := r.db.QueryRow(ctx, query,
-		u.DisplayName,
-		u.AvatarURL,
-		u.Bio,
-		u.Country,
-		u.UpdatedAt,
-		u.ID,
-	).Scan(&u.UpdatedAt)
-
-	if err != nil {
-		return nil, err
+	result := r.db.Model(&dbUser{}).Where("id = ?", u.ID).Updates(map[string]interface{}{
+		"display_name": u.DisplayName,
+		"avatar_url":   u.AvatarURL,
+		"bio":          u.Bio,
+		"country":      u.Country,
+		"updated_at":   time.Now(),
+	})
+	if result.Error != nil {
+		return nil, result.Error
 	}
 	return u, nil
 }
 
-func (r *UserRepository) CreateSession(ctx context.Context, sessionID string, userID uuid.UUID, expiresAt time.Time) error {
+func (r *UserRepository) CreateSession(_ context.Context, sessionID string, userID uuid.UUID, expiresAt time.Time) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -254,16 +202,11 @@ func (r *UserRepository) CreateSession(ctx context.Context, sessionID string, us
 		return nil
 	}
 
-	query := `
-		INSERT INTO sessions (id, user_id, expires_at)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (id) DO UPDATE SET expires_at = EXCLUDED.expires_at;
-	`
-	_, err := r.db.Exec(ctx, query, sessionID, userID, expiresAt)
-	return err
+	sess := dbSession{ID: sessionID, UserID: userID, ExpiresAt: expiresAt}
+	return r.db.Save(&sess).Error
 }
 
-func (r *UserRepository) GetUserBySession(ctx context.Context, sessionID string) (*models.User, error) {
+func (r *UserRepository) GetUserBySession(_ context.Context, sessionID string) (*models.User, error) {
 	if r.db == nil {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
@@ -278,48 +221,36 @@ func (r *UserRepository) GetUserBySession(ctx context.Context, sessionID string)
 		return u, nil
 	}
 
-	query := `
-		SELECT u.id, u.email, u.password_hash, u.display_name, u.avatar_url, u.bio, u.product, u.country, u.created_at, u.updated_at
-		FROM users u
-		JOIN sessions s ON s.user_id = u.id
-		WHERE s.id = $1 AND s.expires_at > CURRENT_TIMESTAMP;
-	`
-	var u models.User
-	err := r.db.QueryRow(ctx, query, sessionID).Scan(
-		&u.ID,
-		&u.Email,
-		&u.PasswordHash,
-		&u.DisplayName,
-		&u.AvatarURL,
-		&u.Bio,
-		&u.Product,
-		&u.Country,
-		&u.CreatedAt,
-		&u.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	var sess dbSession
+	if err := r.db.Where("id = ? AND expires_at > ?", sessionID, time.Now()).First(&sess).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &u, nil
+
+	var row dbUser
+	if err := r.db.First(&row, "id = ?", sess.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return toModelUser(row), nil
 }
 
-func (r *UserRepository) DeleteSession(ctx context.Context, sessionID string) error {
+func (r *UserRepository) DeleteSession(_ context.Context, sessionID string) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		delete(r.memSess, sessionID)
 		return nil
 	}
-	query := `DELETE FROM sessions WHERE id = $1;`
-	_, err := r.db.Exec(ctx, query, sessionID)
-	return err
+	return r.db.Delete(&dbSession{}, "id = ?", sessionID).Error
 }
 
 // SetPassword stores a new bcrypt hash for the user.
-func (r *UserRepository) SetPassword(ctx context.Context, id uuid.UUID, hash string) error {
+func (r *UserRepository) SetPassword(_ context.Context, id uuid.UUID, hash string) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -328,13 +259,14 @@ func (r *UserRepository) SetPassword(ctx context.Context, id uuid.UUID, hash str
 		}
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id, hash)
-	return err
+	return r.db.Model(&dbUser{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"password_hash": hash,
+		"updated_at":    time.Now(),
+	}).Error
 }
 
-// DeleteUser removes the account; sessions, library, playlists, history and
-// preferences are removed with it (ON DELETE CASCADE).
-func (r *UserRepository) DeleteUser(ctx context.Context, id uuid.UUID) error {
+// DeleteUser removes the account; sessions and all related data are cascaded by the DB.
+func (r *UserRepository) DeleteUser(_ context.Context, id uuid.UUID) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -344,12 +276,11 @@ func (r *UserRepository) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		}
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
-	return err
+	return r.db.Delete(&dbUser{}, "id = ?", id).Error
 }
 
 // AttachCredentials gives a guest profile a real email and password.
-func (r *UserRepository) AttachCredentials(ctx context.Context, id uuid.UUID, email, hash string) error {
+func (r *UserRepository) AttachCredentials(_ context.Context, id uuid.UUID, email, hash string) error {
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -360,6 +291,9 @@ func (r *UserRepository) AttachCredentials(ctx context.Context, id uuid.UUID, em
 		}
 		return nil
 	}
-	_, err := r.db.Exec(ctx, `UPDATE users SET email = $2, password_hash = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id, email, hash)
-	return err
+	return r.db.Model(&dbUser{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"email":         email,
+		"password_hash": hash,
+		"updated_at":    time.Now(),
+	}).Error
 }

@@ -13,10 +13,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/sonara/api/internal/config"
 	"github.com/sonara/api/internal/dashboard"
@@ -37,33 +39,43 @@ func main() {
 
 	cfg := config.Load()
 
-	// Database pool
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// GORM database connection
+	var db *gorm.DB
+	gormCfg := &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	}
+	if cfg.AppEnv != "production" {
+		gormCfg.Logger = gormlogger.Default.LogMode(gormlogger.Warn)
+	}
 
-	var dbPool *pgxpool.Pool
-	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
-	if err == nil {
-		poolConfig.MaxConns = 25
-		poolConfig.MinConns = 2
-		poolConfig.MaxConnLifetime = 1 * time.Hour
-		dbPool, err = pgxpool.NewWithConfig(ctx, poolConfig)
-		if err != nil {
-			log.Warn().Err(err).Msg("Postgres connection failed, running in in-memory fallback mode")
-			dbPool = nil
-		} else if pingErr := dbPool.Ping(ctx); pingErr != nil {
-			log.Warn().Err(pingErr).Msg("Postgres ping failed (check credentials/server), running in in-memory fallback mode")
-			dbPool.Close()
-			dbPool = nil
+	sqlDB, err := gorm.Open(postgres.Open(cfg.DatabaseURL), gormCfg)
+	if err != nil {
+		log.Warn().Err(err).Msg("Postgres connection failed, running in in-memory fallback mode")
+	} else {
+		// Configure connection pool via underlying *sql.DB
+		raw, rawErr := sqlDB.DB()
+		if rawErr != nil {
+			log.Warn().Err(rawErr).Msg("Could not get underlying sql.DB, running in in-memory fallback mode")
 		} else {
-			log.Info().Msg("PostgreSQL connected successfully")
+			raw.SetMaxOpenConns(25)
+			raw.SetMaxIdleConns(5)
+			raw.SetConnMaxLifetime(1 * time.Hour)
+
+			pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer pingCancel()
+			if pingErr := raw.PingContext(pingCtx); pingErr != nil {
+				log.Warn().Err(pingErr).Msg("Postgres ping failed (check credentials/server), running in in-memory fallback mode")
+				_ = raw.Close()
+			} else {
+				db = sqlDB
+				log.Info().Msg("PostgreSQL connected successfully via GORM")
+			}
 		}
 	}
 
 	// Redis
 	var rdb *redis.Client
-	opt, err := redis.ParseURL(cfg.RedisURL)
-	if err == nil {
+	if opt, err := redis.ParseURL(cfg.RedisURL); err == nil {
 		rdb = redis.NewClient(opt)
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
 			log.Warn().Err(err).Msg("Redis connection failed, running with in-memory state")
@@ -74,20 +86,25 @@ func main() {
 	}
 
 	// Repositories
+	userRepo := repository.NewUserRepository(db)
+	historyRepo := repository.NewHistoryRepository(db)
+	prefsRepo := repository.NewPreferencesRepository(db)
+	libraryRepo := repository.NewLibraryRepository(db)
+	collectionRepo := repository.NewCollectionRepository(db)
+	playlistRepo := repository.NewPlaylistRepository(db)
+
+	// Schema init (AutoMigrate via GORM — users first due to FK dependencies)
 	ctxBG := context.Background()
-	userRepo := repository.NewUserRepository(dbPool)
-	historyRepo := repository.NewHistoryRepository(dbPool)
-	prefsRepo := repository.NewPreferencesRepository(dbPool)
-	libraryRepo := repository.NewLibraryRepository(dbPool)
-	collectionRepo := repository.NewCollectionRepository(dbPool)
-	playlistRepo := repository.NewPlaylistRepository(dbPool)
-	// Schema init (users first)
 	for _, step := range []struct {
 		name string
 		fn   func(context.Context) error
 	}{
-		{"users", userRepo.EnsureSchema}, {"history", historyRepo.EnsureSchema}, {"preferences", prefsRepo.EnsureSchema},
-		{"library", libraryRepo.EnsureSchema}, {"collection", collectionRepo.EnsureSchema}, {"playlists", playlistRepo.EnsureSchema},
+		{"users", userRepo.EnsureSchema},
+		{"history", historyRepo.EnsureSchema},
+		{"preferences", prefsRepo.EnsureSchema},
+		{"library", libraryRepo.EnsureSchema},
+		{"collection", collectionRepo.EnsureSchema},
+		{"playlists", playlistRepo.EnsureSchema},
 	} {
 		if err := step.fn(ctxBG); err != nil {
 			log.Warn().Err(err).Str("schema", step.name).Msg("could not ensure schema")
@@ -270,8 +287,10 @@ func main() {
 		log.Error().Err(err).Msg("Server forced shutdown")
 	}
 
-	if dbPool != nil {
-		dbPool.Close()
+	if db != nil {
+		if raw, err := db.DB(); err == nil {
+			_ = raw.Close()
+		}
 	}
 
 	log.Info().Msg("Sonara API successfully stopped")
