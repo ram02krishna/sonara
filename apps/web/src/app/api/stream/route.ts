@@ -2,10 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+const MAX_FIELD = 200;
+
 export async function GET(request: NextRequest) {
+  // The player only calls this for signed-in listeners. Without a session cookie this route was an
+  // open endpoint that fetched YouTube pages on behalf of anyone on the internet.
+  if (!request.cookies.get("sonara_session")?.value) {
+    return NextResponse.json({ found: false, error: "Sign in to play full songs" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
-  const name = searchParams.get("name") || "";
-  const artist = searchParams.get("artist") || "";
+  const name = (searchParams.get("name") || "").slice(0, MAX_FIELD);
+  const artist = (searchParams.get("artist") || "").slice(0, MAX_FIELD);
   const quality = searchParams.get("quality") || "lossless";
 
   let defaultQuery = `${name} ${artist} audio`;
@@ -15,7 +23,7 @@ export async function GET(request: NextRequest) {
     defaultQuery = `${name} ${artist} official audio`;
   }
 
-  const q = searchParams.get("q") || defaultQuery;
+  const q = (searchParams.get("q") || defaultQuery).slice(0, MAX_FIELD * 2);
 
   if (!q.trim()) {
     return NextResponse.json({ found: false, error: "Missing query parameter" }, { status: 400 });

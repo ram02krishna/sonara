@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,16 +17,20 @@ import (
 )
 
 // dbUserPreference is the GORM-mapped struct for user_preferences.
+//
+// Onboarded and NormalizeAudio are pointers on purpose: GORM treats a zero value on a field
+// that has a `default` tag as "not set" and inserts the column default instead, so a plain
+// bool could never be saved as false (normalize_audio would always come back true).
 type dbUserPreference struct {
-	UserID         uuid.UUID          `gorm:"column:user_id;type:uuid;primaryKey"`
-	Languages      pqStringArray      `gorm:"column:languages;type:text[];not null;default:'{}'"`
-	Genres         pqStringArray      `gorm:"column:genres;type:text[];not null;default:'{}'"`
-	Artists        artistSummaryJSON  `gorm:"column:artists;type:jsonb;not null;default:'[]'"`
-	Country        string             `gorm:"column:country;size:8;not null;default:''"`
-	Onboarded      bool               `gorm:"column:onboarded;not null;default:false"`
-	AudioQuality   string             `gorm:"column:audio_quality;size:32;not null;default:'lossless'"`
-	NormalizeAudio bool               `gorm:"column:normalize_audio;not null;default:true"`
-	UpdatedAt      time.Time          `gorm:"column:updated_at;autoUpdateTime"`
+	UserID         uuid.UUID         `gorm:"column:user_id;type:uuid;primaryKey"`
+	Languages      pqStringArray     `gorm:"column:languages;type:text[];not null;default:'{}'"`
+	Genres         pqStringArray     `gorm:"column:genres;type:text[];not null;default:'{}'"`
+	Artists        artistSummaryJSON `gorm:"column:artists;type:jsonb;not null;default:'[]'"`
+	Country        string            `gorm:"column:country;size:8;not null;default:''"`
+	Onboarded      *bool             `gorm:"column:onboarded;not null;default:false"`
+	AudioQuality   string            `gorm:"column:audio_quality;size:32;not null;default:'lossless'"`
+	NormalizeAudio *bool             `gorm:"column:normalize_audio;not null;default:true"`
+	UpdatedAt      time.Time         `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 func (dbUserPreference) TableName() string { return "user_preferences" }
@@ -32,49 +38,85 @@ func (dbUserPreference) TableName() string { return "user_preferences" }
 // pqStringArray handles PostgreSQL TEXT[] columns.
 type pqStringArray []string
 
+// Scan parses Postgres array text such as {rock,"hip hop","say \"hi\""}.
 func (a *pqStringArray) Scan(val interface{}) error {
-	if val == nil {
+	switch v := val.(type) {
+	case nil:
 		*a = []string{}
 		return nil
-	}
-	var b []byte
-	switch v := val.(type) {
+	case []string:
+		*a = append([]string{}, v...)
+		return nil
 	case []byte:
-		b = v
+		return a.scanText(string(v))
 	case string:
-		b = []byte(v)
+		return a.scanText(v)
 	default:
 		return fmt.Errorf("pqStringArray: unsupported type %T", val)
 	}
-	// PostgreSQL arrays come in as {"a","b","c"} notation.
-	// Use pgx-style parsing via json alternative for simplicity:
-	// Convert {a,b,c} → ["a","b","c"] and unmarshal.
-	s := string(b)
-	if len(s) >= 2 && s[0] == '{' && s[len(s)-1] == '}' {
-		inner := s[1 : len(s)-1]
-		if inner == "" {
-			*a = []string{}
-			return nil
-		}
-		// Re-encode as JSON array for safe unmarshal.
-		jsonStr := "[" + inner + "]"
-		return json.Unmarshal([]byte(jsonStr), a)
-	}
-	return json.Unmarshal(b, a)
 }
 
-func (a pqStringArray) Value() (driver.Value, error) {
-	if len(a) == 0 {
-		return "{}", nil
-	}
-	// Build PostgreSQL array literal: '{"a","b"}'
-	b, err := json.Marshal([]string(a))
+func (a *pqStringArray) scanText(s string) error {
+	items, err := parsePGTextArray(s)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	// Convert ["a","b"] → {"a","b"}
-	s := string(b)
-	return "{" + s[1:len(s)-1] + "}", nil
+	*a = items
+	return nil
+}
+
+// Value renders the array as a Postgres array literal.
+func (a pqStringArray) Value() (driver.Value, error) {
+	return formatPGTextArray([]string(a)), nil
+}
+
+// parsePGTextArray decodes a one-dimensional Postgres text[] literal. Postgres only
+// quotes elements when it has to, so {rock,pop} and {"hip hop"} are both valid input.
+func parsePGTextArray(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '{' || s[len(s)-1] != '}' {
+		return nil, fmt.Errorf("pqStringArray: invalid array literal %q", s)
+	}
+	body := s[1 : len(s)-1]
+	out := []string{}
+	for i := 0; i < len(body); {
+		var b strings.Builder
+		if body[i] == '"' {
+			i++
+			for i < len(body) && body[i] != '"' {
+				if body[i] == '\\' && i+1 < len(body) {
+					i++
+				}
+				b.WriteByte(body[i])
+				i++
+			}
+			i++ // closing quote
+			out = append(out, b.String())
+		} else {
+			for i < len(body) && body[i] != ',' {
+				b.WriteByte(body[i])
+				i++
+			}
+			if v := strings.TrimSpace(b.String()); !strings.EqualFold(v, "NULL") {
+				out = append(out, v)
+			}
+		}
+		if i < len(body) && body[i] == ',' {
+			i++
+		}
+	}
+	return out, nil
+}
+
+// formatPGTextArray encodes a slice as a Postgres array literal with every element quoted.
+func formatPGTextArray(a []string) string {
+	parts := make([]string, len(a))
+	for i, v := range a {
+		v = strings.ReplaceAll(v, `\`, `\\`)
+		v = strings.ReplaceAll(v, `"`, `\"`)
+		parts[i] = `"` + v + `"`
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // artistSummaryJSON handles []models.ArtistSummary stored as JSONB.
@@ -121,7 +163,10 @@ func (r *PreferencesRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	return r.db.AutoMigrate(&dbUserPreference{})
+	if err := r.db.AutoMigrate(&dbUserPreference{}); err != nil {
+		return err
+	}
+	return ensureCascadeFK(r.db, "user_preferences", "user_id", "users")
 }
 
 func emptyPrefs() models.Preferences {
@@ -145,10 +190,12 @@ func (r *PreferencesRepository) Get(_ context.Context, userID uuid.UUID) (models
 	}
 
 	var row dbUserPreference
-	result := r.db.First(&row, "user_id = ?", userID)
-	if result.Error != nil {
-		// No record is fine — return defaults.
-		return emptyPrefs(), nil
+	if err := r.db.First(&row, "user_id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// No record yet is fine: return defaults. Real database errors are reported.
+			return emptyPrefs(), nil
+		}
+		return models.Preferences{}, err
 	}
 
 	p := models.Preferences{
@@ -156,9 +203,9 @@ func (r *PreferencesRepository) Get(_ context.Context, userID uuid.UUID) (models
 		Genres:         []string(row.Genres),
 		Artists:        []models.ArtistSummary(row.Artists),
 		Country:        row.Country,
-		Onboarded:      row.Onboarded,
+		Onboarded:      row.Onboarded != nil && *row.Onboarded,
 		AudioQuality:   row.AudioQuality,
-		NormalizeAudio: row.NormalizeAudio,
+		NormalizeAudio: row.NormalizeAudio == nil || *row.NormalizeAudio,
 	}
 	if p.Languages == nil {
 		p.Languages = []string{}
@@ -202,9 +249,9 @@ func (r *PreferencesRepository) Save(_ context.Context, userID uuid.UUID, p mode
 		Genres:         pqStringArray(p.Genres),
 		Artists:        artistSummaryJSON(p.Artists),
 		Country:        p.Country,
-		Onboarded:      p.Onboarded,
+		Onboarded:      &p.Onboarded,
 		AudioQuality:   p.AudioQuality,
-		NormalizeAudio: p.NormalizeAudio,
+		NormalizeAudio: &p.NormalizeAudio,
 	}
 	return r.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}},

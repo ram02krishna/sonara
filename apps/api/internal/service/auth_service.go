@@ -32,6 +32,17 @@ func NewAuthService(cfg *config.Config, userRepo *repository.UserRepository, rdb
 	}
 }
 
+// checkPassword enforces the length rules (bcrypt silently cannot hash more than 72 bytes).
+func checkPassword(p string) error {
+	if len(p) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+	if len(p) > 72 {
+		return errors.New("password must be at most 72 bytes")
+	}
+	return nil
+}
+
 func generateSessionID() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -50,16 +61,19 @@ func (s *AuthService) Register(ctx context.Context, email, password, displayName
 	if !strings.Contains(cleanEmail, "@") || len(cleanEmail) > 254 {
 		return nil, "", errors.New("enter a valid email address")
 	}
-	if len(password) < 8 {
-		return nil, "", errors.New("password must be at least 8 characters")
+	if err := checkPassword(password); err != nil {
+		return nil, "", err
 	}
 	if cleanName == "" {
 		cleanName = strings.Split(cleanEmail, "@")[0]
 	}
 
-	existing, _ := s.userRepo.GetByEmail(ctx, cleanEmail)
+	existing, err := s.userRepo.GetByEmail(ctx, cleanEmail)
+	if err != nil {
+		return nil, "", errors.New("could not create your account, please try again")
+	}
 	if existing != nil {
-		return nil, "", errors.New("an account with this email already exists")
+		return nil, "", repository.ErrEmailTaken
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -77,7 +91,10 @@ func (s *AuthService) Register(ctx context.Context, email, password, displayName
 
 	saved, err := s.userRepo.CreateUser(ctx, user)
 	if err != nil {
-		return nil, "", err
+		if errors.Is(err, repository.ErrEmailTaken) {
+			return nil, "", err
+		}
+		return nil, "", errors.New("could not create your account, please try again")
 	}
 
 	sessionID, err := s.createSession(ctx, saved.ID)
@@ -88,6 +105,10 @@ func (s *AuthService) Register(ctx context.Context, email, password, displayName
 	return saved, sessionID, nil
 }
 
+// dummyHash is compared against when the email is unknown so that "no such user" takes as
+// long as "wrong password" and the endpoint cannot be used to enumerate accounts.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("sonara-dummy-password"), bcrypt.DefaultCost)
+
 // Login verifies credentials and begins a 30-day session
 func (s *AuthService) Login(ctx context.Context, email, password string) (*models.User, string, error) {
 	cleanEmail := strings.ToLower(strings.TrimSpace(email))
@@ -97,6 +118,7 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*model
 
 	user, err := s.userRepo.GetByEmail(ctx, cleanEmail)
 	if err != nil || user == nil {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, "", errors.New("invalid email or password")
 	}
 
@@ -153,8 +175,8 @@ func (s *AuthService) UpdateProfile(ctx context.Context, user *models.User, name
 
 // ChangePassword verifies the current password (when the account has one) and sets a new one.
 func (s *AuthService) ChangePassword(ctx context.Context, user *models.User, current, next string) error {
-	if len(next) < 8 {
-		return errors.New("new password must be at least 8 characters")
+	if err := checkPassword(next); err != nil {
+		return err
 	}
 	if user.PasswordHash != "" {
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)); err != nil {
@@ -179,8 +201,8 @@ func (s *AuthService) UpgradeGuest(ctx context.Context, user *models.User, email
 	if !strings.Contains(cleanEmail, "@") {
 		return errors.New("enter a valid email address")
 	}
-	if len(password) < 8 {
-		return errors.New("password must be at least 8 characters")
+	if err := checkPassword(password); err != nil {
+		return err
 	}
 	if existing, _ := s.userRepo.GetByEmail(ctx, cleanEmail); existing != nil && existing.ID != user.ID {
 		return errors.New("an account with this email already exists")
@@ -189,7 +211,13 @@ func (s *AuthService) UpgradeGuest(ctx context.Context, user *models.User, email
 	if err != nil {
 		return err
 	}
-	return s.userRepo.AttachCredentials(ctx, user.ID, cleanEmail, string(hash))
+	if err := s.userRepo.AttachCredentials(ctx, user.ID, cleanEmail, string(hash)); err != nil {
+		if errors.Is(err, repository.ErrEmailTaken) {
+			return err
+		}
+		return errors.New("could not upgrade your profile, please try again")
+	}
+	return nil
 }
 
 func (s *AuthService) createSession(ctx context.Context, userID uuid.UUID) (string, error) {

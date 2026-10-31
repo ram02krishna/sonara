@@ -164,6 +164,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (c) {
       document.documentElement.style.setProperty("--dynamic-accent", c);
       document.documentElement.style.setProperty("--dynamic-accent-soft", `${c}33`);
+    } else {
+      // Back to the default accent; otherwise the last mood's colour stayed applied.
+      document.documentElement.style.removeProperty("--dynamic-accent");
+      document.documentElement.style.removeProperty("--dynamic-accent-soft");
     }
   },
 

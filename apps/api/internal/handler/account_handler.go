@@ -63,6 +63,11 @@ func (h *MusicHandler) UpgradeGuest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !isGuest(user) {
+		// A full account already has credentials; changing them goes through /me/password.
+		writeError(w, http.StatusBadRequest, "upgrade_failed", "This account already has an email and password.")
+		return
+	}
 	var body authRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request.")

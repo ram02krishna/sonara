@@ -41,36 +41,42 @@ func main() {
 
 	// GORM database connection
 	var db *gorm.DB
-	gormCfg := &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	}
-	if cfg.AppEnv != "production" {
-		gormCfg.Logger = gormlogger.Default.LogMode(gormlogger.Warn)
-	}
+	if cfg.DatabaseURL != "" && cfg.DatabaseURL != "memory" && cfg.DatabaseURL != "none" {
+		// Start with Silent logger so a failed local connection falls back cleanly without noisy GORM stack traces
+		gormCfg := &gorm.Config{
+			Logger:         gormlogger.Default.LogMode(gormlogger.Silent),
+			TranslateError: true,
+		}
 
-	sqlDB, err := gorm.Open(postgres.Open(cfg.DatabaseURL), gormCfg)
-	if err != nil {
-		log.Warn().Err(err).Msg("Postgres connection failed, running in in-memory fallback mode")
-	} else {
-		// Configure connection pool via underlying *sql.DB
-		raw, rawErr := sqlDB.DB()
-		if rawErr != nil {
-			log.Warn().Err(rawErr).Msg("Could not get underlying sql.DB, running in in-memory fallback mode")
+		sqlDB, err := gorm.Open(postgres.Open(cfg.DatabaseURL), gormCfg)
+		if err != nil {
+			log.Warn().Msg("Postgres connection failed (or bad credentials), running in in-memory fallback mode")
 		} else {
-			raw.SetMaxOpenConns(25)
-			raw.SetMaxIdleConns(5)
-			raw.SetConnMaxLifetime(1 * time.Hour)
-
-			pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer pingCancel()
-			if pingErr := raw.PingContext(pingCtx); pingErr != nil {
-				log.Warn().Err(pingErr).Msg("Postgres ping failed (check credentials/server), running in in-memory fallback mode")
-				_ = raw.Close()
+			// Configure connection pool via underlying *sql.DB
+			raw, rawErr := sqlDB.DB()
+			if rawErr != nil {
+				log.Warn().Err(rawErr).Msg("Could not get underlying sql.DB, running in in-memory fallback mode")
 			} else {
-				db = sqlDB
-				log.Info().Msg("PostgreSQL connected successfully via GORM")
+				raw.SetMaxOpenConns(25)
+				raw.SetMaxIdleConns(5)
+				raw.SetConnMaxLifetime(1 * time.Hour)
+
+				pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer pingCancel()
+				if pingErr := raw.PingContext(pingCtx); pingErr != nil {
+					log.Warn().Msg("Postgres ping failed, running in in-memory fallback mode")
+					_ = raw.Close()
+				} else {
+					if cfg.AppEnv != "production" {
+						sqlDB.Logger = gormlogger.Default.LogMode(gormlogger.Warn)
+					}
+					db = sqlDB
+					log.Info().Msg("PostgreSQL connected successfully via GORM")
+				}
 			}
 		}
+	} else {
+		log.Info().Msg("PostgreSQL not configured, running in in-memory fallback mode")
 	}
 
 	// Redis
@@ -163,7 +169,9 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: allowedOrigins,
 		AllowOriginFunc: func(r *http.Request, origin string) bool {
-			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
+			// Any localhost port is fine for local development, but never trust it in production.
+			if cfg.AppEnv != "production" &&
+				(strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")) {
 				return true
 			}
 			for _, o := range allowedOrigins {
@@ -261,10 +269,11 @@ func main() {
 	// Server
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		Addr:        addr,
+		Handler:     r,
+		ReadTimeout: 15 * time.Second,
+		// Must outlive middleware.Timeout (30s) or slow dashboard builds are cut off mid-response.
+		WriteTimeout: 35 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

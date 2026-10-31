@@ -51,6 +51,13 @@ var categories = []Category{
 	{"road-trip", "Road Trip", "mood", "#ca8a04", []string{"road trip songs", "driving songs"}},
 }
 
+// albumQuery turns a genre filter such as genre:"hip hop" into plain search text (hip hop).
+// Removing only the `genre:"` prefix used to leave the closing quote behind.
+func albumQuery(q string) string {
+	q = strings.TrimPrefix(q, `genre:`)
+	return strings.TrimSpace(strings.Trim(q, `"`))
+}
+
 func (h *MusicHandler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"categories": categories})
 }
@@ -101,7 +108,7 @@ func (h *MusicHandler) GetCategory(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		if res, err := h.Catalog.Search(r.Context(), strings.Replace(cat.Queries[len(cat.Queries)-1], `genre:"`, "", 1), "album", 10, 0, market); err == nil {
+		if res, err := h.Catalog.Search(r.Context(), albumQuery(cat.Queries[len(cat.Queries)-1]), "album", 10, 0, market); err == nil {
 			mu.Lock()
 			out.Albums = res.Albums
 			mu.Unlock()

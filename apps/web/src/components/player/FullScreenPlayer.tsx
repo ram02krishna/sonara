@@ -471,7 +471,7 @@ export function FullScreenPlayer() {
                 )}
               </button>
               <button
-                onClick={playNext}
+                onClick={() => playNext()}
                 className={cn(
                   "p-2 transition-colors",
                   isLight ? "text-slate-700 hover:text-slate-900" : "text-white/80 hover:text-white"

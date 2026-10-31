@@ -174,7 +174,7 @@ Quick reference for the Vercel side (set the project's **Root Directory to `apps
 ## Verification & Tests
 
 ```bash
-cd apps/api && go test ./...                 # Go API tests
+cd apps/api && go test ./...                 # Go API tests (set TEST_DATABASE_URL to also run the Postgres integration tests)
 cd apps/web && npm run build                 # Next.js web lint + type-check + build
 ```
 
@@ -185,10 +185,9 @@ apps/web/src/app          pages: home, explore, search, library, playlist, album
 apps/web/src/components   layout (Sidebar, Header, RightPanel), player (PlaybackEngine, Player, VideoDock), ui (cards, menus, dialogs)
 apps/web/src/hooks        data hooks (TanStack Query), play helpers
 apps/web/src/store        Zustand: player, app settings, UI (menus/dialogs)
-apps/api/internal         handler, repository, provider (Spotify, iTunes, LRCLIB, YouTube), dashboard, service
-packages/db               Prisma ORM schema and client for PostgreSQL
+apps/api/internal         handler, repository (GORM models + AutoMigrate), provider (Spotify, iTunes, LRCLIB, YouTube), dashboard, service
 packages/api-spec         OpenAPI specification and generated types
-infra/                    docker-compose (local), Dockerfiles, postgres/init.sql
+infra/                    docker-compose (local), Dockerfiles, postgres/init.sql (extensions only)
 infra/aws/                production stack: compose, nginx, deploy + TLS scripts, .env.example
 .github/workflows/        ci.yml (checks) and deploy.yml (build -> Docker Hub -> EC2)
 docs/DEPLOYMENT.md        Vercel + AWS deployment guide

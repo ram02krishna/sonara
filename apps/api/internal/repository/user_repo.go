@@ -15,7 +15,7 @@ import (
 // dbUser is the GORM-mapped struct for the users table.
 type dbUser struct {
 	ID           uuid.UUID `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()"`
-	Email        string    `gorm:"column:email;uniqueIndex:idx_users_email;size:255;not null"`
+	Email        string    `gorm:"column:email;unique;size:255;not null"`
 	PasswordHash string    `gorm:"column:password_hash;size:255;not null;default:''"`
 	DisplayName  string    `gorm:"column:display_name;size:255;not null"`
 	AvatarURL    string    `gorm:"column:avatar_url;default:''"`
@@ -82,7 +82,7 @@ func (r *UserRepository) EnsureSchema(_ context.Context) error {
 	if err := r.db.AutoMigrate(&dbUser{}, &dbSession{}); err != nil {
 		return err
 	}
-	return nil
+	return ensureCascadeFK(r.db, "sessions", "user_id", "users")
 }
 
 func (r *UserRepository) CreateUser(_ context.Context, u *models.User) (*models.User, error) {
@@ -95,7 +95,7 @@ func (r *UserRepository) CreateUser(_ context.Context, u *models.User) (*models.
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if _, exists := r.memEmail[cleanEmail]; exists {
-			return nil, errors.New("email already registered")
+			return nil, ErrEmailTaken
 		}
 		u.Email = cleanEmail
 		now := time.Now()
@@ -117,6 +117,9 @@ func (r *UserRepository) CreateUser(_ context.Context, u *models.User) (*models.
 		Country:      u.Country,
 	}
 	if result := r.db.Create(&row); result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			return nil, ErrEmailTaken
+		}
 		return nil, result.Error
 	}
 	return toModelUser(row), nil
@@ -135,7 +138,8 @@ func (r *UserRepository) GetByEmail(_ context.Context, email string) (*models.Us
 	}
 
 	var row dbUser
-	result := r.db.Where("LOWER(email) = ?", cleanEmail).First(&row)
+	// Emails are always stored lower-cased, so a plain equality lets Postgres use the unique index.
+	result := r.db.Where("email = ?", cleanEmail).First(&row)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -265,7 +269,9 @@ func (r *UserRepository) SetPassword(_ context.Context, id uuid.UUID, hash strin
 	}).Error
 }
 
-// DeleteUser removes the account; sessions and all related data are cascaded by the DB.
+// DeleteUser permanently removes the account and everything it owns. The foreign keys
+// created in EnsureSchema cascade too, but the explicit transaction guarantees the data
+// is gone even on databases where a constraint could not be added.
 func (r *UserRepository) DeleteUser(_ context.Context, id uuid.UUID) error {
 	if r.db == nil {
 		r.mu.Lock()
@@ -274,9 +280,29 @@ func (r *UserRepository) DeleteUser(_ context.Context, id uuid.UUID) error {
 			delete(r.memEmail, u.Email)
 			delete(r.memUsers, id)
 		}
+		for sid, sess := range r.memSess {
+			if sess.UserID == id {
+				delete(r.memSess, sid)
+			}
+		}
 		return nil
 	}
-	return r.db.Delete(&dbUser{}, "id = ?", id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for _, stmt := range []string{
+			`DELETE FROM sonara_playlist_tracks WHERE playlist_id IN (SELECT id FROM sonara_playlists WHERE user_id = ?)`,
+			`DELETE FROM sonara_playlists WHERE user_id = ?`,
+			`DELETE FROM user_collection WHERE user_id = ?`,
+			`DELETE FROM user_library WHERE user_id = ?`,
+			`DELETE FROM user_preferences WHERE user_id = ?`,
+			`DELETE FROM play_history WHERE user_id = ?`,
+			`DELETE FROM sessions WHERE user_id = ?`,
+		} {
+			if err := tx.Exec(stmt, id).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Delete(&dbUser{}, "id = ?", id).Error
+	})
 }
 
 // AttachCredentials gives a guest profile a real email and password.
@@ -284,6 +310,9 @@ func (r *UserRepository) AttachCredentials(_ context.Context, id uuid.UUID, emai
 	if r.db == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		if other, taken := r.memEmail[email]; taken && other != id {
+			return ErrEmailTaken
+		}
 		if u, ok := r.memUsers[id]; ok {
 			delete(r.memEmail, u.Email)
 			u.Email, u.PasswordHash = email, hash
@@ -291,9 +320,13 @@ func (r *UserRepository) AttachCredentials(_ context.Context, id uuid.UUID, emai
 		}
 		return nil
 	}
-	return r.db.Model(&dbUser{}).Where("id = ?", id).Updates(map[string]interface{}{
+	err := r.db.Model(&dbUser{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"email":         email,
 		"password_hash": hash,
 		"updated_at":    time.Now(),
 	}).Error
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return ErrEmailTaken
+	}
+	return err
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -70,6 +71,7 @@ func (c *YouTubeClient) FindVideo(ctx context.Context, name, artist string) (*Vi
 	c.mu.Unlock()
 
 	res, err, _ := c.sf.Do(cacheKey, func() (interface{}, error) {
+		ctx := context.WithoutCancel(ctx)
 		q := url.Values{}
 		q.Set("part", "snippet")
 		q.Set("type", "video")
@@ -84,7 +86,13 @@ func (c *YouTubeClient) FindVideo(ctx context.Context, name, artist string) (*Vi
 		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			// *url.Error embeds the full request URL, which contains the API key, and this
+			// message is returned to API clients. Keep only the underlying cause.
+			var uerr *url.Error
+			if errors.As(err, &uerr) {
+				err = uerr.Err
+			}
+			return nil, fmt.Errorf("youtube request failed: %w", err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {

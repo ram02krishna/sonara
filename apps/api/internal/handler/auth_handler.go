@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -135,9 +136,11 @@ func RateLimit(max int, window time.Duration) func(http.Handler) http.Handler {
 	buckets := map[string]*bucket{}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// RemoteAddr is "host:port" ("[::1]:1234" for IPv6), or a bare IP once the RealIP
+			// middleware has rewritten it; stripping at the last ":" mangled bare IPv6 addresses.
 			ip := r.RemoteAddr
-			if i := strings.LastIndex(ip, ":"); i > 0 {
-				ip = ip[:i]
+			if host, _, err := net.SplitHostPort(ip); err == nil {
+				ip = host
 			}
 			mu.Lock()
 			b := buckets[ip]

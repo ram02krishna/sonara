@@ -106,4 +106,3 @@ func genreQueries(genre string) []string {
 	}
 	return []string{g + " hits", g + " trending", g + " songs"}
 }
-

@@ -45,8 +45,14 @@ interface PlayerState {
   removeFromQueue: (index: number) => void;
   reorderQueue: (from: number, to: number) => void;
   clearQueue: () => void;
-  playNext: () => boolean;
+  /**
+   * Advance to the next track. Pass `{ auto: true }` when the current track has ended on its own:
+   * only then does repeat-one restart the track. A manual Next always moves on.
+   */
+  playNext: (opts?: { auto?: boolean }) => boolean;
   playPrevious: () => void;
+  /** Forget everything that is playing (used when the signed-in account changes). */
+  reset: () => void;
   setIsExpanded: (expanded: boolean) => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   toggleRightPanelTab: (tab: RightPanelTab) => void;
@@ -157,9 +163,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }),
 
   // Returns false when there was nothing to play next (the engine may then autoplay similar music).
-  playNext: () => {
+  playNext: (opts) => {
     const { queue, currentTrack, history, repeatMode, context } = get();
-    if (repeatMode === "track" && currentTrack) {
+    // Strict check: UI code that passes the click event straight in must not count as "auto".
+    if (opts?.auto === true && repeatMode === "track" && currentTrack) {
       set((s) => ({ restartToken: s.restartToken + 1, progressMs: 0, isPlaying: true }));
       return true;
     }
@@ -188,6 +195,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({ queue: currentTrack ? [currentTrack, ...queue] : queue, history: rest });
     void get().setCurrentTrack(prev);
   },
+
+  reset: () =>
+    set({
+      currentTrack: null, isPlaying: false, progressMs: 0, durationMs: 0, queue: [], context: [], history: [],
+      lyrics: null, isLoadingLyrics: false, engine: "idle", isExpanded: false, rightPanelTab: null,
+      sleepTimerEndsAt: null, sleepAfterTrack: false,
+    }),
 
   setIsExpanded: (isExpanded) => set({ isExpanded }),
   setRightPanelTab: (rightPanelTab) => set({ rightPanelTab }),

@@ -44,13 +44,14 @@ type lrclibResponse struct {
 
 var lrcLineRegex = regexp.MustCompile(`^\[(\d{2}):(\d{2}\.\d{2,3})\](.*)$`)
 
-func cleanTrackName(name string) string {
-	cleaned := name
-	reParen := regexp.MustCompile(`(?i)\s*[\(\[][^\)\]]*(from|feat|ft\.|with|soundtrack|version|remaster|ost|live|edition|deluxe|bonus)[^\)\]]*[\)\]]`)
-	cleaned = reParen.ReplaceAllString(cleaned, "")
+var (
+	reTitleParen    = regexp.MustCompile(`(?i)\s*[\(\[][^\)\]]*(from|feat|ft\.|with|soundtrack|version|remaster|ost|live|edition|deluxe|bonus)[^\)\]]*[\)\]]`)
+	reTitleEndParen = regexp.MustCompile(`\s*[\(\[][^\)\]]*[\)\]]$`)
+)
 
-	reEndParen := regexp.MustCompile(`\s*[\(\[][^\)\]]*[\)\]]$`)
-	cleaned = reEndParen.ReplaceAllString(cleaned, "")
+func cleanTrackName(name string) string {
+	cleaned := reTitleParen.ReplaceAllString(name, "")
+	cleaned = reTitleEndParen.ReplaceAllString(cleaned, "")
 
 	if idx := strings.Index(cleaned, " - "); idx != -1 {
 		cleaned = cleaned[:idx]
@@ -205,11 +206,11 @@ func (c *LRCLIBClient) GetLyrics(ctx context.Context, trackName, artistName stri
 		TrackName:   data.TrackName,
 		ArtistName:  data.ArtistName,
 		PlainLyrics: data.PlainLyrics,
-		Synced:      data.SyncedLyrics != "",
+		Synced:      strings.TrimSpace(data.SyncedLyrics) != "",
 		Lines:       []models.LyricsLine{},
 	}
 
-	if data.SyncedLyrics != "" {
+	if strings.TrimSpace(data.SyncedLyrics) != "" {
 		lines := strings.Split(data.SyncedLyrics, "\n")
 		for _, line := range lines {
 			line = strings.TrimSpace(line)

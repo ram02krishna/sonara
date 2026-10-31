@@ -89,6 +89,8 @@ func (s *SpotifyProvider) Search(ctx context.Context, query, types string, limit
 	s.searchMu.RUnlock()
 
 	v, err, _ := s.sf.Do(cacheKey, func() (interface{}, error) {
+		// Shared by every waiting caller: one caller hanging up must not fail the rest.
+		ctx := context.WithoutCancel(ctx)
 		endpoint := fmt.Sprintf("/search?q=%s&type=%s&limit=%d&offset=%d&market=%s",
 			url.QueryEscape(query), url.QueryEscape(types), limit, offset, url.QueryEscape(resolvedMarket))
 		var raw rawSearchResponse

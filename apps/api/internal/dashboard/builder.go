@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -411,13 +413,22 @@ func slug(s string) string {
 			b.WriteRune('-')
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	out := strings.Trim(b.String(), "-")
+	if out == "" && strings.TrimSpace(s) != "" {
+		// Names with no ASCII letters (e.g. "अरिजीत सिंह") all slugged to "", so their shelves
+		// collided on the same id and only the first one survived. Use a stable hash instead.
+		h := sha1.Sum([]byte(s))
+		return hex.EncodeToString(h[:4])
+	}
+	return out
 }
 
 func titleCase(s string) string {
 	words := strings.Fields(strings.TrimSpace(s))
 	for i, w := range words {
-		words[i] = strings.ToUpper(w[:1]) + w[1:]
+		// Work on runes: slicing w[:1] cut multi-byte characters (e.g. Devanagari) in half.
+		r, size := utf8.DecodeRuneInString(w)
+		words[i] = string(unicode.ToUpper(r)) + w[size:]
 	}
 	return strings.Join(words, " ")
 }
@@ -478,6 +489,11 @@ func (b *Builder) fetchTasteTunedNewReleases(ctx context.Context, in Input, mark
 
 func hashTaste(p models.Preferences, topGenres []string) string {
 	var parts []string
+	if p.Onboarded {
+		// Saving preferences flips Onboarded; without it in the key a cached dashboard that still
+		// says needs_onboarding=true could be served for up to two minutes after onboarding.
+		parts = append(parts, "onboarded")
+	}
 	for _, l := range p.Languages {
 		parts = append(parts, "l:"+strings.ToLower(strings.TrimSpace(l)))
 	}

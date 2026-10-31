@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -21,8 +23,12 @@ func playlistID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 }
 
 func playlistError(w http.ResponseWriter, err error) {
-	if err == repository.ErrPlaylistNotFound {
+	if errors.Is(err, repository.ErrPlaylistNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "Playlist not found.")
+		return
+	}
+	if errors.Is(err, repository.ErrInvalidPosition) {
+		writeError(w, http.StatusBadRequest, "bad_request", "That position is outside the playlist.")
 		return
 	}
 	dbError(w, err)
@@ -36,12 +42,14 @@ type playlistBody struct {
 
 func cleanPlaylist(b playlistBody) (string, string, bool) {
 	name := strings.TrimSpace(b.Name)
-	if name == "" || len(name) > 120 {
+	// Count characters, not bytes: the column limit is in characters and names may be non-ASCII.
+	if name == "" || utf8.RuneCountInString(name) > 120 {
 		return "", "", false
 	}
 	desc := strings.TrimSpace(b.Description)
-	if len(desc) > 500 {
-		desc = desc[:500]
+	if r := []rune(desc); len(r) > 500 {
+		// Cutting at a byte offset could split a multi-byte character and make Postgres reject the row.
+		desc = string(r[:500])
 	}
 	return name, desc, true
 }

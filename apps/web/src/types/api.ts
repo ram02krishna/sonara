@@ -185,6 +185,8 @@ export interface Preferences {
   artists: ArtistSummary[];
   country?: string;
   onboarded: boolean;
+  audio_quality?: "lossless" | "high" | "normal";
+  normalize_audio?: boolean;
 }
 
 /** A playlist created by a Sonara user. */

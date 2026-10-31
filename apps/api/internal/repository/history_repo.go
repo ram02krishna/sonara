@@ -37,6 +37,9 @@ type trackJSONField struct {
 }
 
 func (t *trackJSONField) Scan(val interface{}) error {
+	if val == nil {
+		return nil
+	}
 	var b []byte
 	switch v := val.(type) {
 	case []byte:
@@ -68,7 +71,10 @@ func (r *HistoryRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	return r.db.AutoMigrate(&dbPlayHistory{})
+	if err := r.db.AutoMigrate(&dbPlayHistory{}); err != nil {
+		return err
+	}
+	return ensureCascadeFK(r.db, "play_history", "user_id", "users")
 }
 
 // RecordPlay stores one real play. listenedMs is how much audio the user actually heard.
@@ -105,13 +111,6 @@ func (r *HistoryRepository) RecordPlay(_ context.Context, userID uuid.UUID, trac
 	return r.db.Create(&row).Error
 }
 
-type statsRow struct {
-	PlayCount     int
-	UniqueTracks  int
-	UniqueArtists int
-	TotalMs       int64
-}
-
 // GetStats computes real listening stats from recorded plays.
 func (r *HistoryRepository) GetStats(_ context.Context, userID uuid.UUID, timeRange string) (*models.StatsReport, error) {
 	report := &models.StatsReport{TopGenres: []models.GenreStat{}, DailyListening: []models.DailyListeningStat{}}
@@ -145,7 +144,7 @@ func (r *HistoryRepository) GetStats(_ context.Context, userID uuid.UUID, timeRa
 
 	// Activity series: per day for 4 weeks, per month otherwise.
 	trunc, label := "month", "Mon YY"
-	if timeRange == "4weeks" {
+	if timeRange == "4weeks" || timeRange == "short_term" {
 		trunc, label = "day", "DD Mon"
 	}
 	var daily []struct {

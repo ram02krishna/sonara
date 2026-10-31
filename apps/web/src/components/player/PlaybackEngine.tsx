@@ -72,7 +72,9 @@ export function PlaybackEngine() {
   settingsRef.current = settings;
 
   // On track end
-  const handleEnded = useCallback(async () => {
+  // `auto` is true when the track finished by itself (repeat-one then replays it) and false for a
+  // manual skip such as the media-key "next" button.
+  const handleEnded = useCallback(async (auto: boolean = true) => {
     const st = usePlayerStore.getState();
     if (st.sleepAfterTrack) {
       st.setIsPlaying(false);
@@ -80,7 +82,7 @@ export function PlaybackEngine() {
       addToast({ title: "Sleep timer", description: "Playback stopped. Good night.", type: "info" });
       return;
     }
-    if (st.playNext()) return;
+    if (st.playNext({ auto })) return;
     if (settingsRef.current.autoplay && st.currentTrack) {
       const more = await fetchSimilar(st.currentTrack);
       if (more.length) {
@@ -122,7 +124,7 @@ export function PlaybackEngine() {
         },
         onStateChange: (e: any) => {
           if (modeRef.current !== "video") return;
-          if (e.data === 0) void endedRef.current();
+          if (e.data === 0) void endedRef.current(true);
           else if (e.data === 1) usePlayerStore.getState().setIsPlaying(true);
           else if (e.data === 2) usePlayerStore.getState().setIsPlaying(false);
         },
@@ -170,11 +172,13 @@ export function PlaybackEngine() {
     pendingVideo.current = null;
   }, []);
 
-  const startVideo = async (videoId: string) => {
+  const startVideo = async (videoId: string, forTrackId: string) => {
     audioRef.current?.pause();
     modeRef.current = "video";
     usePlayerStore.getState().setEngine("video");
     const yt = await ensureYt();
+    // The YouTube player can take a while to initialise: don't start a song the user already skipped.
+    if (usePlayerStore.getState().currentTrack?.id !== forTrackId) return;
     if (yt.loadVideoById) yt.loadVideoById(videoId);
     else pendingVideo.current = videoId; // player still initialising: onReady will load it
   };
@@ -215,9 +219,11 @@ export function PlaybackEngine() {
   // Pre-warm YouTube player
   useEffect(() => {
     if (shouldPlayFullSong) {
-      void loadYouTube().then(() => {
-        ensureYt().catch(() => {});
-      });
+      loadYouTube()
+        .then(() => ensureYt())
+        .catch(() => {
+          /* the player is created again on demand when a song starts */
+        });
     }
   }, [shouldPlayFullSong, ensureYt]);
 
@@ -298,7 +304,7 @@ export function PlaybackEngine() {
 
         if (cancelled) return;
         if (videoId) {
-          await startVideo(videoId);
+          await startVideo(videoId, track.id);
           return;
         }
 
@@ -350,8 +356,11 @@ export function PlaybackEngine() {
 
   useEffect(() => {
     if (restartToken === 0) return;
-    if (modeRef.current === "video") ytRef.current?.seekTo?.(0, true);
-    else if (audioRef.current) {
+    if (modeRef.current === "video") {
+      ytRef.current?.seekTo?.(0, true);
+      // After "ended" YouTube stays stopped on seek, so repeat-one needs an explicit play.
+      ytRef.current?.playVideo?.();
+    } else if (audioRef.current) {
       audioRef.current.currentTime = 0;
       if (usePlayerStore.getState().isPlaying) audioRef.current.play().catch(() => undefined);
     }
@@ -425,7 +434,7 @@ export function PlaybackEngine() {
     const st = usePlayerStore.getState;
     navigator.mediaSession.setActionHandler("play", () => st().setIsPlaying(true));
     navigator.mediaSession.setActionHandler("pause", () => st().setIsPlaying(false));
-    navigator.mediaSession.setActionHandler("nexttrack", () => void endedRef.current());
+    navigator.mediaSession.setActionHandler("nexttrack", () => void endedRef.current(false));
     navigator.mediaSession.setActionHandler("previoustrack", () => st().playPrevious());
   }, [track]);
 

@@ -1,4 +1,4 @@
-.PHONY: help dev build lint test docker-up docker-down docker-logs docker-build migrate-up migrate-down gen-spec prisma-gen prisma-push prisma-migrate prisma-studio
+.PHONY: help dev build lint test docker-up docker-down docker-logs docker-build gen-spec
 
 help:
 	@echo "Sonara - Music Streaming Monorepo"
@@ -14,13 +14,8 @@ help:
 	@echo "  make docker-down    - Stop all Docker Compose containers"
 	@echo "  make docker-logs    - Stream Docker Compose logs"
 	@echo "  make docker-build   - Build the API and web Docker images (checks the Dockerfiles before you push)"
-	@echo "  make migrate-up     - Apply database migrations (Prisma db push)"
-	@echo "  make migrate-down   - Rollback database migrations"
-	@echo "  make gen-spec       - Generate TypeScript & Go code from OpenAPI spec"
-	@echo "  make prisma-gen     - Generate Prisma Client from schema.prisma"
-	@echo "  make prisma-push    - Push Prisma schema state to PostgreSQL database"
-	@echo "  make prisma-migrate - Run Prisma migrations in dev"
-	@echo "  make prisma-studio  - Open Prisma Studio web interface"
+	@echo "  make gen-spec       - Generate TypeScript types from the OpenAPI spec"
+	@echo "  (Database schema is managed by GORM AutoMigrate when the API starts)"
 
 dev-web:
 	npm run dev --workspace=apps/web
@@ -60,18 +55,3 @@ docker-build:
 
 gen-spec:
 	npm run gen --workspace=packages/api-spec
-
-migrate-up:
-	npm run db:push
-
-prisma-gen:
-	npm run db:generate
-
-prisma-push:
-	npm run db:push
-
-prisma-migrate:
-	npm run db:migrate
-
-prisma-studio:
-	npm run db:studio

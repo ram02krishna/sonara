@@ -77,7 +77,10 @@ func (r *CollectionRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	return r.db.AutoMigrate(&dbUserCollection{})
+	if err := r.db.AutoMigrate(&dbUserCollection{}); err != nil {
+		return err
+	}
+	return ensureCascadeFK(r.db, "user_collection", "user_id", "users")
 }
 
 func (r *CollectionRepository) Add(_ context.Context, userID uuid.UUID, kind, itemID string, item interface{}) error {

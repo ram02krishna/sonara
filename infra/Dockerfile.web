@@ -10,7 +10,6 @@ RUN apk add --no-cache libc6-compat
 COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/api-spec/package.json ./packages/api-spec/
-COPY packages/db/package.json ./packages/db/
 RUN npm ci
 
 
@@ -18,7 +17,6 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run db:generate
 
 # Next bakes rewrites in at build time: point /api/v1 at wherever the API lives.
 # Default is the `api` service on the docker-compose network.

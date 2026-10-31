@@ -25,7 +25,12 @@ func (h *DashboardHandler) GetDashboard(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	prefs, _ := h.music.prefsRepo.Get(r.Context(), user.ID)
+	prefs, err := h.music.prefsRepo.Get(r.Context(), user.ID)
+	if err != nil {
+		// Falling back to empty preferences here would wrongly send the user back to onboarding.
+		writeError(w, http.StatusInternalServerError, "preferences_unavailable", "Could not load your taste preferences.")
+		return
+	}
 	if prefs.Country == "" {
 		prefs.Country = user.Country
 	}
@@ -59,7 +64,19 @@ func (h *DashboardHandler) PutPreferences(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var in models.Preferences
+	current, err := h.music.prefsRepo.Get(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "preferences_unavailable", "Could not load your taste preferences.")
+		return
+	}
+	// Start from what is stored so a client that omits a field (the web app never sends
+	// audio_quality / normalize_audio) does not silently reset it to the zero value.
+	in := current
+	// Decode into fresh slices: json reuses an existing slice's backing array, which would
+	// otherwise mutate the stored value when the in-memory repository is in use.
+	in.Languages = append([]string(nil), current.Languages...)
+	in.Genres = append([]string(nil), current.Genres...)
+	in.Artists = append([]models.ArtistSummary(nil), current.Artists...)
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid preferences payload.")
 		return

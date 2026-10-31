@@ -37,6 +37,9 @@ type libraryTrackJSON struct {
 }
 
 func (t *libraryTrackJSON) Scan(val interface{}) error {
+	if val == nil {
+		return nil
+	}
 	var b []byte
 	switch v := val.(type) {
 	case []byte:
@@ -71,7 +74,10 @@ func (r *LibraryRepository) EnsureSchema(_ context.Context) error {
 	if r.db == nil {
 		return nil
 	}
-	return r.db.AutoMigrate(&dbUserLibrary{})
+	if err := r.db.AutoMigrate(&dbUserLibrary{}); err != nil {
+		return err
+	}
+	return ensureCascadeFK(r.db, "user_library", "user_id", "users")
 }
 
 func (r *LibraryRepository) SaveTrack(_ context.Context, userID uuid.UUID, t models.Track) error {

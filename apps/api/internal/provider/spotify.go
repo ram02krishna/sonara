@@ -234,6 +234,8 @@ func (s *SpotifyProvider) GetTrack(ctx context.Context, id string) (*models.Trac
 	s.trackMu.RUnlock()
 
 	v, err, _ := s.sf.Do("track:"+id, func() (interface{}, error) {
+		// Shared by every waiting caller: one caller hanging up must not fail the rest.
+		ctx := context.WithoutCancel(ctx)
 		var t rawTrack
 		if err := s.catalogGET(ctx, "/tracks/"+url.PathEscape(id), &t); err != nil {
 			return nil, err
@@ -269,6 +271,7 @@ func (s *SpotifyProvider) GetAlbum(ctx context.Context, id, market string) (*mod
 	s.albumMu.RUnlock()
 
 	v, err, _ := s.sf.Do("album:"+cacheKey, func() (interface{}, error) {
+		ctx := context.WithoutCancel(ctx)
 		var raw struct {
 			models.AlbumSummary
 			Artists []models.ArtistSummary `json:"artists"`

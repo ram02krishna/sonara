@@ -9,6 +9,10 @@
     "gen": "openapi-typescript sonara-api.yaml -o ../../apps/web/src/types/openapi.ts"
   },
   "devDependencies": {
-    "openapi-typescript": "^7.4.0"
+    "openapi-typescript": "^6.7.6"
+  },
+  "dependencies": {
+    "eslint": "4.0.0",
+    "next": "16.4.3"
   }
 }

@@ -21,7 +21,7 @@ func (h *LyricsHandler) GetLyrics(w http.ResponseWriter, r *http.Request) {
 	durationMs, _ := strconv.Atoi(r.URL.Query().Get("duration_ms"))
 
 	if trackName == "" || artistName == "" {
-		http.Error(w, "track_name and artist_name required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", "track_name and artist_name are required")
 		return
 	}
 

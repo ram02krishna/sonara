@@ -52,7 +52,7 @@ func loadDotEnv() {
 func Load() *Config {
 	loadDotEnv()
 	return &Config{
-		Port:                 getEnv("PORT", getEnv("API_PORT", "8080")),
+		Port:                 getEnv("API_PORT", getEnv("PORT", "8080")),
 		AppEnv:               getEnv("APP_ENV", "development"),
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://sonara:sonarasecret@localhost:5432/sonara?sslmode=disable"),
 		RedisURL:             getEnv("REDIS_URL", "redis://localhost:6379/0"),

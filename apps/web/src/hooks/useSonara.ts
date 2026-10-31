@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError, json } from "@/lib/api-client";
+import { usePlayerStore } from "@/store/usePlayerStore";
 import {
   AlbumDetail,
   AlbumSummary,
@@ -46,6 +47,7 @@ function useAuthMutation<T>(fn: (p: T) => Promise<AuthResponse>) {
     mutationFn: fn,
     onSuccess: async (data) => {
       qc.clear(); // a different identity must never see the previous one's cached data
+      usePlayerStore.getState().reset(); // ...nor the previous one's queue and now-playing track
       if (data) {
         qc.setQueryData(["session"], data);
       }
@@ -67,6 +69,7 @@ export function useLogout() {
     mutationFn: () => apiFetch<void>("/auth/logout", { method: "POST" }),
     onSuccess: () => {
       qc.clear();
+      usePlayerStore.getState().reset();
       qc.setQueryData(["session"], { authenticated: false });
     },
   });
@@ -102,8 +105,16 @@ export function useUpgradeGuest() {
   });
 }
 
-export const useDeleteAccount = () =>
-  useMutation({ mutationFn: () => apiFetch<{ deleted: boolean }>("/me", { method: "DELETE", params: { confirm: "yes" } }) });
+export function useDeleteAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<{ deleted: boolean }>("/me", { method: "DELETE", params: { confirm: "yes" } }),
+    onSuccess: () => {
+      qc.clear();
+      usePlayerStore.getState().reset();
+    },
+  });
+}
 
 export function useClearHistory() {
   const qc = useQueryClient();
